@@ -1,0 +1,64 @@
+{
+  "name": "remotion-lint",
+  "version": "0.1.0",
+  "description": "A layout linter for Remotion videos: opens the real bundle in a browser, measures every frame you ask for, and fails CI on clipped, tiny, overlapping or off-safe-area text, banned words, drift from a reference screen, and motion glitches.",
+  "license": "MIT",
+  "author": "Sahil Sawant (https://github.com/SahilSawant)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SahilSawant/remotion-lint.git"
+  },
+  "homepage": "https://github.com/SahilSawant/remotion-lint#readme",
+  "bugs": {
+    "url": "https://github.com/SahilSawant/remotion-lint/issues"
+  },
+  "type": "module",
+  "bin": {
+    "remotion-lint": "dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "npm test"
+  },
+  "keywords": [
+    "remotion",
+    "video",
+    "lint",
+    "qa",
+    "playwright",
+    "visual-regression"
+  ],
+  "peerDependencies": {
+    "@remotion/bundler": ">=4.0.0 <5",
+    "remotion": ">=4.0.0 <5"
+  },
+  "dependencies": {
+    "pixelmatch": "^7.1.0",
+    "playwright": "^1.55.0",
+    "pngjs": "^7.0.0"
+  },
+  "devDependencies": {
+    "@remotion/bundler": "4.0.529",
+    "@types/node": "^22.10.0",
+    "@types/pngjs": "^6.0.5",
+    "@types/react": "^19.1.0",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "remotion": "4.0.529",
+    "typescript": "^5.8.0"
+  }
+}
