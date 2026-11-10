@@ -17,11 +17,14 @@ export interface Issue extends Box {
   kind: IssueKind;
   text: string;
   px?: number;
+  /** The text runs involved (see {@link TextRun.key}); empty for a forbidden word found on a non-text element. */
+  keys: string[];
 }
 
 /** One visible run of text: where it is, and where it can be seen once masks are applied. */
 export interface TextRun {
-  text: string;
+  /** Stable identity across frames: the n-th run with this exact text, as `"<n>:<text>"`. */
+  key: string;
   full: Box;
   visible: Box;
 }
@@ -40,19 +43,21 @@ type Rules = Config["layout"] & { W: number; H: number };
  * what breaks the rules. Must stay self-contained, because Playwright serialises it into the page.
  *
  * - `[data-lint="embedded"]`: another app's UI inside the video; only clipping and forbidden words are checked.
- * - `[data-lint-layer="<n>"]`: stacked shots; text under an opaque higher layer that covers it is skipped.
+ * - `[data-lint-layer="<n>"]`: stacked shots; text under a painted, opaque higher layer that covers it is skipped.
  * - `[data-lint-ignore="<kind> <kind>"]` or `"all"`: switches checks off for an element and everything inside it.
  */
 export const measure = ({ minFontPx, safeArea, W, H, overlap, forbidden }: Rules): FrameMeasure => {
   type R = { left: number; top: number; right: number; bottom: number };
-  type Run = { el: Element; text: string; px: number; lines: R[]; full: R; vis: R; cut: boolean; embedded: boolean; svg: boolean };
+  type Run = { el: Element; key: string; text: string; px: number; caps: R[]; full: R; vis: R; cut: boolean; embedded: boolean; svg: boolean };
   const toBox = (r: R) => ({ x: r.left, y: r.top, w: r.right - r.left, h: r.bottom - r.top });
   const area = (r: R) => Math.max(0, r.right - r.left) * Math.max(0, r.bottom - r.top);
   const intersect = (a: R, b: R): R => ({ left: Math.max(a.left, b.left), top: Math.max(a.top, b.top), right: Math.min(a.right, b.right), bottom: Math.min(a.bottom, b.bottom) });
   const union = (rs: R[]): R => ({ left: Math.min(...rs.map((r) => r.left)), top: Math.min(...rs.map((r) => r.top)), right: Math.max(...rs.map((r) => r.right)), bottom: Math.max(...rs.map((r) => r.bottom)) });
   const transparent = (c: string) => !c || c === "rgba(0, 0, 0, 0)" || c === "transparent";
+  const paints = (cs: CSSStyleDeclaration) => !transparent(cs.backgroundColor) || cs.backgroundImage !== "none";
   const short = (s: string) => (s.length > 60 ? s.slice(0, 57) + "..." : s);
   const norm = (s: string) => s.replace(/\s+/g, " ").trim();
+  const skip = (el: Element) => !!el.closest("script, style, noscript, [data-lint-mark]");
 
   const opacityOf = (el: Element | null) => {
     let a = 1;
@@ -96,89 +101,108 @@ export const measure = ({ minFontPx, safeArea, W, H, overlap, forbidden }: Rules
     return s;
   };
 
-  /** Each line's box, shrunk vertically to the em box: the font's ascent and descent overstate where letters are. */
-  const linesOf = (el: Element, px: number): R[] => {
+  /** Line boxes of the element's own text nodes (not its child elements), each shrunk to `ratio` em around its middle. */
+  const linesOf = (el: Element, px: number, ratio: number): R[] => {
     if (el instanceof SVGGraphicsElement) {
       const r = el.getBoundingClientRect();
       return r.width && r.height ? [r] : [];
     }
-    const range = document.createRange();
-    range.selectNodeContents(el);
     const out: R[] = [];
-    for (const r of range.getClientRects()) {
-      if (r.width < 1 || r.height < 1) continue;
-      const h = Math.min(r.height, px);
-      const mid = (r.top + r.bottom) / 2;
-      out.push({ left: r.left, right: r.right, top: mid - h / 2, bottom: mid + h / 2 });
+    for (const n of el.childNodes) {
+      if (n.nodeType !== Node.TEXT_NODE || !n.textContent?.trim()) continue;
+      const range = document.createRange();
+      range.selectNodeContents(n);
+      for (const r of range.getClientRects()) {
+        if (r.width < 1 || r.height < 1) continue;
+        const h = Math.min(r.height, px * ratio);
+        const mid = (r.top + r.bottom) / 2;
+        out.push({ left: r.left, right: r.right, top: mid - h / 2, bottom: mid + h / 2 });
+      }
     }
     return out;
   };
 
-  /** The part of `r` left visible after every clipping ancestor of `el`, plus the ancestors that cut into it. */
+  const containsBlock = (cs: CSSStyleDeclaration) => cs.transform !== "none" || cs.filter !== "none" || cs.perspective !== "none" || /paint|layout|strict|content/.test(cs.contain);
+  /**
+   * The part of `r` left visible after every box that actually clips `el`, starting with `el` itself.
+   * An absolutely positioned element is only clipped by ancestors on its containing-block chain.
+   */
   const clipOf = (el: Element, r: R, tol: number) => {
     let vis = r;
     let cut = false;
-    for (let e = el.parentElement; e && e !== document.body; e = e.parentElement) {
+    let need: "any" | "positioned" | "transformed" = "any";
+    for (let e: Element | null = el; e && e !== document.body; e = e.parentElement) {
       const cs = getComputedStyle(e);
+      const onChain = e === el || need === "any" || (need === "positioned" && (cs.position !== "static" || containsBlock(cs))) || (need === "transformed" && containsBlock(cs));
+      if (!onChain) continue;
       const cx = cs.overflowX !== "visible", cy = cs.overflowY !== "visible";
-      if (!cx && !cy) continue;
-      const er = e.getBoundingClientRect();
-      const bound = { left: cx ? er.left : -Infinity, right: cx ? er.right : Infinity, top: cy ? er.top : -Infinity, bottom: cy ? er.bottom : Infinity };
-      if (r.left < bound.left - tol || r.right > bound.right + tol || r.top < bound.top - tol || r.bottom > bound.bottom + tol) cut = true;
-      vis = intersect(vis, bound);
+      if (cx || cy) {
+        const er = e.getBoundingClientRect();
+        const bound = { left: cx ? er.left : -Infinity, right: cx ? er.right : Infinity, top: cy ? er.top : -Infinity, bottom: cy ? er.bottom : Infinity };
+        if (r.left < bound.left - tol || r.right > bound.right + tol || r.top < bound.top - tol || r.bottom > bound.bottom + tol) cut = true;
+        vis = intersect(vis, bound);
+      }
+      need = cs.position === "absolute" ? "positioned" : cs.position === "fixed" ? "transformed" : "any";
     }
     return { vis, cut };
   };
 
-  const layers = [...document.querySelectorAll<HTMLElement>("[data-lint-layer]")].map((e) => ({ z: Number(e.dataset.lintLayer), o: opacityOf(e), r: e.getBoundingClientRect() as R }));
+  const layers = [...document.querySelectorAll<HTMLElement>("[data-lint-layer]")].map((e) => ({
+    z: Number(e.dataset.lintLayer), o: opacityOf(e), painted: paints(getComputedStyle(e)), r: e.getBoundingClientRect() as R,
+  }));
   const covered = (el: Element, r: R) => {
     const own = el.closest<HTMLElement>("[data-lint-layer]");
     if (!own) return false;
     const z = Number(own.dataset.lintLayer);
-    return layers.some((l) => l.z > z && l.o > 0.98 && l.r.left <= r.left + 1 && l.r.top <= r.top + 1 && l.r.right >= r.right - 1 && l.r.bottom >= r.bottom - 1);
+    return layers.some((l) => l.z > z && l.painted && l.o > 0.98 && l.r.left <= r.left + 1 && l.r.top <= r.top + 1 && l.r.right >= r.right - 1 && l.r.bottom >= r.bottom - 1);
   };
   const frame: R = { left: 0, top: 0, right: W, bottom: H };
 
   const runs: Run[] = [];
+  const seenText = new Map<string, number>();
   const seen = new Set<Element>();
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   while (walker.nextNode()) {
     const node = walker.currentNode;
     if (!node.textContent?.trim()) continue;
     const el = node.parentElement;
-    if (!el || seen.has(el) || el.closest("script, style, noscript, [data-lint-mark]")) continue;
+    if (!el || seen.has(el) || skip(el)) continue;
     seen.add(el);
     if (hidden(el)) continue;
     const svg = el instanceof SVGElement;
     const px = Math.round(parseFloat(getComputedStyle(el).fontSize) * scaleOf(el) * 10) / 10;
-    const lines = linesOf(el, px);
+    const lines = linesOf(el, px, 1);
     if (!lines.length) continue;
     const full = union(lines);
     const { vis, cut } = svg ? { vis: full, cut: false } : clipOf(el, full, Math.max(1, px * 0.08));
     const onScreen = intersect(vis, frame);
     if (area(onScreen) < 1 || covered(el, onScreen)) continue;
-    runs.push({ el, text: norm(el.textContent ?? ""), px, lines, full, vis: onScreen, cut, embedded: !!el.closest('[data-lint="embedded"]'), svg });
+    const text = norm(el.textContent ?? "");
+    const n = (seenText.get(text) ?? 0) + 1;
+    seenText.set(text, n);
+    runs.push({ el, key: `${n}:${text}`, text, px, caps: linesOf(el, px, 0.75), full, vis: onScreen, cut, embedded: !!el.closest('[data-lint="embedded"]'), svg });
   }
 
-  const issues: Array<{ kind: string; text: string; x: number; y: number; w: number; h: number; px?: number }> = [];
-  const add = (kind: string, el: Element, text: string, r: R, px?: number) => {
-    if (!ignored(el, kind)) issues.push({ kind, text: short(text), ...toBox(r), ...(px ? { px } : {}) });
+  const issues: Issue[] = [];
+  const add = (kind: IssueKind, els: Element[], keys: string[], text: string, r: R, px?: number) => {
+    if (!els.some((el) => ignored(el, kind))) issues.push({ kind, text: short(text), keys, ...toBox(r), ...(px ? { px } : {}) });
   };
 
   for (const t of runs) {
-    if (t.cut) add("clipped", t.el, t.text, t.full, t.px);
+    const one = [t.el], k = [t.key];
+    if (t.cut) add("clipped", one, k, t.text, t.full, t.px);
     if (t.embedded) continue;
-    if (t.px < minFontPx) add("too-small", t.el, t.text, t.vis, t.px);
-    if (t.vis.left < safeArea || t.vis.top < safeArea || t.vis.right > W - safeArea || t.vis.bottom > H - safeArea) add("outside-safe-area", t.el, t.text, t.vis, t.px);
+    if (t.px < minFontPx) add("too-small", one, k, t.text, t.vis, t.px);
+    if (t.vis.left < safeArea || t.vis.top < safeArea || t.vis.right > W - safeArea || t.vis.bottom > H - safeArea) add("outside-safe-area", one, k, t.text, t.vis, t.px);
     if (t.svg) continue;
 
     for (let e: Element | null = t.el; e && e !== document.body; e = e.parentElement) {
       const ecs = getComputedStyle(e);
-      if (transparent(ecs.backgroundColor) && !(parseFloat(ecs.borderTopWidth) > 0) && ecs.backgroundImage === "none") continue;
+      if (!paints(ecs) && !(parseFloat(ecs.borderTopWidth) > 0)) continue;
       const br = e.getBoundingClientRect();
       if (br.width < 40 || br.height < 20) continue;
       if (e === t.el || (br.width >= W - 2 && br.height >= H - 2)) break;
-      if (t.vis.left < br.left - 2 || t.vis.right > br.right + 2 || t.vis.top < br.top - 2 || t.vis.bottom > br.bottom + 2) add("escapes-box", t.el, t.text, t.vis, t.px);
+      if (t.vis.left < br.left - 2 || t.vis.right > br.right + 2 || t.vis.top < br.top - 2 || t.vis.bottom > br.bottom + 2) add("escapes-box", one, k, t.text, t.vis, t.px);
       break;
     }
 
@@ -193,35 +217,66 @@ export const measure = ({ minFontPx, safeArea, W, H, overlap, forbidden }: Rules
       const ic = stack.findIndex((e) => c === e || c.contains(e));
       const it = stack.findIndex((e) => e === t.el || t.el.contains(e));
       if (ic >= 0 && (it < 0 || ic < it)) {
-        add("under-control", t.el, t.text, t.vis, t.px);
+        add("under-control", one, k, t.text, t.vis, t.px);
         break;
       }
     }
   }
 
   const film = runs.filter((t) => !t.embedded);
+  const near = (a: R, b: R) => Math.abs(a.left - b.left) < 4 && Math.abs(a.top - b.top) < 4 && Math.abs(a.right - b.right) < 4 && Math.abs(a.bottom - b.bottom) < 4;
   for (let i = 0; i < film.length; i++) {
     for (let j = i + 1; j < film.length; j++) {
       const a = film[i], b = film[j];
       if (a.el.contains(b.el) || b.el.contains(a.el)) continue;
-      const hit = a.lines.some((la) => b.lines.some((lb) => area(intersect(la, lb)) > overlap * Math.min(area(la), area(lb))));
-      if (hit) add("overlap", a.el, `${short(a.text)} <> ${short(b.text)}`, union([a.vis, b.vis]));
+      if (a.text === b.text && near(a.full, b.full)) continue;
+      const hit = a.caps.some((la) => b.caps.some((lb) => area(intersect(la, lb)) > overlap * Math.min(area(la), area(lb))));
+      if (hit) add("overlap", [a.el, b.el], [a.key, b.key], `${short(a.text)} <> ${short(b.text)}`, union([a.vis, b.vis]));
     }
   }
 
   if (forbidden.length) {
     const banned = forbidden.map((f) => new RegExp(f, "i"));
-    const textOf = (e: Element) => norm(e instanceof HTMLInputElement || e instanceof HTMLTextAreaElement ? e.value : e.textContent ?? "");
-    const matches = (e: Element) => !e.closest("script, style, noscript, [data-lint-mark]") && banned.some((re) => re.test(textOf(e)));
+    const nodes: Array<{ n: Text; first: R; last: R; px: number }> = [];
+    const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    while (tw.nextNode()) {
+      const n = tw.currentNode as Text;
+      if (!n.textContent?.trim() || !n.parentElement || skip(n.parentElement)) continue;
+      const range = document.createRange();
+      range.selectNodeContents(n);
+      const rs = [...range.getClientRects()].filter((r) => r.width > 0 && r.height > 0);
+      if (!rs.length) continue;
+      nodes.push({ n, first: rs[0], last: rs[rs.length - 1], px: parseFloat(getComputedStyle(n.parentElement).fontSize) });
+    }
+    /** Joins text nodes, adding a space unless two sit side by side on one line, so "What to" / "do next" never reads "todo". */
+    const join = (list: typeof nodes) => {
+      let s = "";
+      list.forEach((x, i) => {
+        if (i) {
+          const p = list[i - 1].last, q = x.first;
+          const sameLine = Math.min(p.bottom, q.bottom) - Math.max(p.top, q.top) > 0.5 * Math.min(p.bottom - p.top, q.bottom - q.top);
+          const gap = q.left - p.right;
+          if (!sameLine || Math.abs(gap) > 0.3 * x.px) s += " ";
+        }
+        s += x.n.textContent;
+      });
+      return norm(s);
+    };
+    const textOf = (e: Element) => (e instanceof HTMLInputElement || e instanceof HTMLTextAreaElement ? norm(e.value) : join(nodes.filter((x) => e.contains(x.n))));
+    const memo = new Map<Element, boolean>();
+    const matches = (e: Element): boolean => {
+      if (!memo.has(e)) memo.set(e, !skip(e) && banned.some((re) => re.test(textOf(e))));
+      return memo.get(e)!;
+    };
     for (const e of document.body.querySelectorAll("*")) {
       if (!matches(e) || [...e.children].some(matches) || hidden(e)) continue;
       const r = intersect(e.getBoundingClientRect(), frame);
       if (area(r) < 1 || covered(e, r)) continue;
-      add("forbidden-word", e, textOf(e), r);
+      add("forbidden-word", [e], [], textOf(e), r);
     }
   }
 
-  return { texts: runs.length, issues: issues as Issue[], runs: runs.map((t) => ({ text: t.text, full: toBox(t.full), visible: toBox(t.vis) })) };
+  return { texts: runs.length, issues, runs: runs.map((t) => ({ key: t.key, full: toBox(t.full), visible: toBox(t.vis) })) };
 };
 
 const COLOUR: Record<IssueKind, string> = {
@@ -259,15 +314,15 @@ export async function screenshotWithMarks(page: Page, issues: Issue[], safeArea:
   await page.evaluate(() => document.querySelectorAll("[data-lint-mark]").forEach((n) => n.remove()));
 }
 
-/** Kinds that are expected while something is moving: a slide-in crosses the edge, a reveal is clipped by its mask. */
-export const TRANSIENT: IssueKind[] = ["clipped", "outside-safe-area"];
+/** Kinds that are expected mid-transition: a slide-in crosses the edge, a reveal is clipped, two titles cross. */
+export const TRANSIENT: IssueKind[] = ["clipped", "outside-safe-area", "overlap"];
 
-/** True when the run with this text has a different full or visible box in `other`, i.e. it is mid-transition. */
-export function isMoving(issue: Issue, now: TextRun[], other: TextRun[]): boolean {
-  const text = issue.text.endsWith("...") ? issue.text.slice(0, -3) : issue.text;
-  const a = now.find((r) => r.text.startsWith(text));
-  const b = other.find((r) => r.text.startsWith(text));
-  if (!a || !b) return false;
-  const moved = (p: Box, q: Box) => Math.abs(p.x - q.x) + Math.abs(p.y - q.y) + Math.abs(p.w - q.w) + Math.abs(p.h - q.h) > 0.5;
-  return moved(a.full, b.full) || moved(a.visible, b.visible);
+const sameBox = (p: Box, q: Box) => Math.abs(p.x - q.x) + Math.abs(p.y - q.y) + Math.abs(p.w - q.w) + Math.abs(p.h - q.h) <= 0.5;
+
+/** Whether every run in `keys` is in both frames and in the same place. A run missing from either frame is not still. */
+export function still(keys: string[], a: TextRun[], b: TextRun[]): boolean {
+  return keys.every((k) => {
+    const p = a.find((r) => r.key === k), q = b.find((r) => r.key === k);
+    return !!p && !!q && sameBox(p.full, q.full) && sameBox(p.visible, q.visible);
+  });
 }

@@ -3,6 +3,7 @@ import { chromium, type Browser, type Page } from "playwright";
 import fs from "node:fs";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
+import os from "node:os";
 import path from "node:path";
 
 /** A composition loaded in a real browser, ready to be moved to any frame. */
@@ -14,6 +15,8 @@ export interface CompositionPage {
   durationInFrames: number;
   /** Shows `frame`, resolves once it is ready and fonts have loaded, and throws if the composition errored. */
   seek(frame: number): Promise<void>;
+  /** Errors the page logged that did not stop it rendering, such as a failed network request. */
+  warnings: string[];
   close(): Promise<void>;
 }
 
@@ -65,7 +68,11 @@ function serve(dir: string): Promise<http.Server> {
   return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server)));
 }
 
-const FATAL = /\b(?:TypeError|ReferenceError|RangeError|SyntaxError|Error):|error occurred in the </i;
+/**
+ * An error thrown while React rendered a component: React's own wording, or an error whose stack
+ * passes through React's render loop. Anything else a page logs (a failed request) is only a warning.
+ */
+const RENDER_ERROR = /error occurred in the <|\bat (?:renderWithHooks|beginWork|performUnitOfWork|workLoopSync|workLoopConcurrent|renderRootSync|commitRoot)\b/;
 
 /**
  * Bundles the entry point, serves it, and opens composition `id` in Chromium.
@@ -76,7 +83,7 @@ const FATAL = /\b(?:TypeError|ReferenceError|RangeError|SyntaxError|Error):|erro
  */
 export async function openComposition({ entryPoint, id, channel, props, webpackOverride }: OpenOptions): Promise<CompositionPage> {
   if (!fs.existsSync(entryPoint)) throw new Error(`entry point not found: ${entryPoint} (set entryPoint in remotion-lint.config.mjs)`);
-  const dir = await bundle({ entryPoint, webpackOverride: webpackOverride ?? ((c) => c) });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "remotion-lint-bundle-"));
   let server: http.Server | undefined;
   let browser: Browser | undefined;
   const cleanup = async () => {
@@ -85,14 +92,18 @@ export async function openComposition({ entryPoint, id, channel, props, webpackO
     fs.rmSync(dir, { recursive: true, force: true });
   };
   try {
+    await bundle({ entryPoint, outDir: dir, webpackOverride: webpackOverride ?? ((c) => c) });
     server = await serve(dir);
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     browser = await chromium.launch(channel ? { channel } : {});
     const page = await browser.newPage({ deviceScaleFactor: 1 });
     const errors: string[] = [];
+    const warnings: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
     page.on("console", (m) => {
-      if (m.type() === "error" && FATAL.test(m.text())) errors.push(m.text().split("\n")[0]);
+      if (m.type() !== "error") return;
+      const first = m.text().split("\n")[0];
+      (RENDER_ERROR.test(m.text()) ? errors : warnings).push(first);
     });
     await page.goto(`${base}/index.html`);
     await page.waitForFunction(() => typeof (window as any).remotion_setBundleMode === "function");
@@ -128,7 +139,7 @@ export async function openComposition({ entryPoint, id, channel, props, webpackO
       if (errors.length) throw new Error(`${id} errored at frame ${frame}: ${errors.splice(0).join("; ")}`);
     };
     return {
-      page, fps: meta.fps, width: meta.width, height: meta.height, durationInFrames: meta.durationInFrames,
+      page, fps: meta.fps, width: meta.width, height: meta.height, durationInFrames: meta.durationInFrames, warnings,
       async seek(frame) {
         await ready(frame);
         fail(frame);

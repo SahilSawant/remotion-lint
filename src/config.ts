@@ -126,7 +126,18 @@ export function validate(user: unknown, name = "config"): void {
       if (!check(v, kind)) throw new Error(`${name}: "${key}.${sub}" must be a ${kind}`);
     }
   }
-  for (const f of (user as UserConfig).layout?.forbidden ?? []) {
+  const u = user as UserConfig;
+  const range = (label: string, v: number | undefined, min: number, max = Infinity) => {
+    if (v !== undefined && (v < min || v > max)) throw new Error(`${name}: "${label}" must be ${max === Infinity ? `at least ${min}` : `between ${min} and ${max}`}, got ${v}`);
+  };
+  range("layout.minFontPx", u.layout?.minFontPx, 0);
+  range("layout.safeArea", u.layout?.safeArea, 0);
+  range("layout.overlap", u.layout?.overlap, 0, 1);
+  range("diff.threshold", u.diff?.threshold, 0, 1);
+  range("diff.maxMismatchPct", u.diff?.maxMismatchPct, 0, 100);
+  range("motion.frozenSeconds", u.motion?.frozenSeconds, 0.01);
+  for (const c of u.motion?.cuts ?? []) range("motion.cuts", c, 0);
+  for (const f of u.layout?.forbidden ?? []) {
     try {
       new RegExp(f, "i");
     } catch {

@@ -20,7 +20,9 @@ $ npx remotion-lint layout Planted 0.5 1.5 2.5 3.5 4.5 5.5 6.5 7.5
 Each failing frame also leaves a screenshot with the problem boxed and labelled.
 
 Exit codes: `0` clean, `1` problems found, `2` the check could not run (a bad composition id, a composition that
-throws, a missing file). A composition that crashes is never reported as clean.
+throws, a missing file, a build error). A composition that crashes is never reported as clean: an uncaught page error,
+`cancelRender()`, or an error thrown while React renders a component stops the run. Other errors the page logs, such
+as a blocked network request, are printed as warnings.
 
 ## Why
 
@@ -52,18 +54,24 @@ npx remotion-lint layout <composition> --every 0.5  # sweep the whole compositio
 | `clipped` | text runs past the edge of any ancestor that hides overflow, on any side |
 | `too-small` | the rendered font size, after every transform and scale, is under `minFontPx` (default 28 at your composition's size) |
 | `outside-safe-area` | text comes closer than `safeArea` px to any edge (default 100) |
-| `overlap` | a line of one text run shares more than `overlap` of the smaller line box with a line of another (default 15%) |
-| `forbidden-word` | any element's full text, or an input's value, matches a pattern in `forbidden`, even when split across spans |
+| `overlap` | a line of one text run shares more than `overlap` of the smaller line's cap-height box with a line of another (default 15%). Two identical copies stacked on each other (outline text) are not an overlap |
+| `forbidden-word` | any element's text, or an input's value, matches a pattern in `forbidden`. Letters split across spans that sit side by side are joined; text on separate lines or far apart is not glued together |
 | `escapes-box` | text sits outside the nearest ancestor that draws a background or border |
 | `under-control` | a small filled shape such as a button or badge is drawn on top of the text |
 
-Lines are measured one by one, and each line's box is the font's em box rather than its ascent and descent, so tight
-leading is not an overlap. Text with opacity under 0.5, hidden text, and text fully behind a mask are ignored.
+Lines are measured one by one from the element's own text, so a decorative child (an accent bar, an icon) is not
+counted as text. Clipping uses the font's em box and overlap uses roughly its cap height, rather than ascent and
+descent, so tight leading down to about 0.7 is not an overlap. Text with opacity under 0.5, hidden text, and text
+fully behind a mask are ignored. Clipping follows CSS: a box only clips what it contains, so an absolutely positioned
+child escapes an `overflow: hidden` parent that is not its containing block.
 
-**Things in motion.** A title sliding in crosses the edge and a reveal is clipped by its mask; that is the design, not
-a bug. When a frame has a `clipped` or `outside-safe-area` problem, remotion-lint looks at the next frame too. If that
-text, or the part of it you can see, has moved, the problem is listed under `skippedWhileMoving` and not counted.
-Once the text settles, it is checked like anything else.
+**Things in motion.** A title sliding in crosses the edge, a reveal is clipped by its mask, and two titles can cross
+mid-transition; that is the design, not a bug. When a frame has a `clipped`, `outside-safe-area` or `overlap`
+problem on moving text, remotion-lint follows that text forward frame by frame, for up to one second, until it stops,
+and judges it there. The problem is skipped (listed under `skippedWhileMoving` with the second it settled) only when
+the settled text is fine, or when the text slides out of view while moving. It counts when the text still has the
+problem once settled, when it never settles within the second (a slow push-in parked at the edge), or when it simply
+disappears at a cut.
 
 **Not covered:** text drawn on a `<canvas>`, in a video or image, or by CSS `::before`/`::after`. SVG `<text>` is
 checked for size, safe area and forbidden words, not for clipping. `under-control` relies on hit testing, so a shape
@@ -95,7 +103,7 @@ npx remotion-lint motion out.mp4
 
 | Finding | Meaning |
 | --- | --- |
-| jump | one frame-to-frame change far bigger than the changes either side of it, not near a planned cut. A fast wipe changes every frame, so it is motion, not a jump |
+| jump | one frame-to-frame change far bigger than every change within two frames of it, not near a planned cut. A fast wipe, or one animated on twos, changes the picture every frame or two, so it is motion, not a jump. A cut straight into motion that is nearly as big as the cut itself can be missed |
 | pop | one frame that differs from both neighbours while they match each other (counted once, not also as jumps) |
 | frozen | nothing changes for longer than `frozenSeconds` (reported, not failed, unless `failOnFrozen`) |
 
@@ -108,8 +116,8 @@ Remotion installs).
 | Attribute | Effect |
 | --- | --- |
 | `data-lint="embedded"` | another app's UI shown inside your video (a phone, a screen recording). Its text is only checked for clipping and forbidden words, because it is supposed to look like the real thing |
-| `data-lint-layer="<n>"` | stacked shots during a transition. Text in a layer covered by an opaque higher layer is skipped |
-| `data-lint-ignore="<kind> <kind>"` | switches those checks off for the element and everything inside it; `"all"` switches all of them off |
+| `data-lint-layer="<n>"` | stacked shots during a transition. Text in a layer is skipped where a higher layer that paints a background, at full opacity, covers it |
+| `data-lint-ignore="<kind> <kind>"` | switches those checks off for the element and everything inside it; `"all"` switches all of them off. For `overlap`, marking either element of the pair is enough |
 | `data-lint="screen"` / `"ref"` | the pair `diff` compares |
 
 ## Config

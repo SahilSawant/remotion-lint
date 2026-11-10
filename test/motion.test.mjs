@@ -38,6 +38,16 @@ test("a fast full-screen wipe is motion, not a run of jumps", () => {
   assert.deepEqual(r.jumps, []);
 });
 
+test("a wipe animated on twos is motion, not a jump per step", () => {
+  const steps = wipe(12, 40, 200).flatMap((f) => [f, f]);
+  assert.deepEqual(analyse([...hold(30, 40), ...steps, ...hold(30, 200)], 30, opts).jumps, []);
+});
+
+test("a hard cut straight into a long wipe is still a jump", () => {
+  const r = analyse([...hold(30, 40), ...wipe(30, 200, 100), ...hold(30, 100)], 30, opts);
+  assert.deepEqual(r.jumps.map((j) => j.t), [1]);
+});
+
 test("one odd frame is a single pop and not also a jump", () => {
   const f = fade(60);
   f[30] = frame(200);

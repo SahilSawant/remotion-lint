@@ -6,7 +6,7 @@ import type { Config } from "./config.js";
 export interface MotionReport {
   frames: number;
   fps: number;
-  /** A frame-to-frame change far bigger than the changes either side of it, not near a planned cut. */
+  /** A frame-to-frame change far bigger than every change within two frames of it, not near a planned cut. */
   jumps: Array<{ t: number; diff: number; around: number }>;
   /** A single frame that differs from both neighbours while they match each other. */
   pops: Array<{ t: number; diff: number }>;
@@ -70,7 +70,7 @@ class Scanner {
     const out: MotionReport = { frames: this.n, fps: round(fps), jumps: [], pops: this.pops.map((i, k) => ({ t: round(i / fps), diff: round(this.popDiffs[k]) })), frozen: [] };
     const nearPop = (i: number) => this.pops.some((p) => p === i || p === i + 1);
     d.forEach((v, i) => {
-      const around = Math.max(d[i - 1] ?? 0, d[i + 1] ?? 0);
+      const around = Math.max(d[i - 2] ?? 0, d[i - 1] ?? 0, d[i + 1] ?? 0, d[i + 2] ?? 0);
       const t = (i + 1) / fps;
       if (v > 6 && v > 4 * (around + 0.3) && !nearPop(i) && !opts.cuts.some((c) => Math.abs(t - c) < 0.07)) out.jumps.push({ t: round(t), diff: round(v), around: round(around) });
     });

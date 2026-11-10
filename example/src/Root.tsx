@@ -114,7 +114,58 @@ export const ORDINARY: Array<[number, string, React.ReactNode]> = [
       <span>The first span is long enough to wrap onto a second line,</span> <span>and the second follows it.</span>
     </p>
   )],
+  [6, "two blocks that only spell a banned word if glued together", (
+    <>
+      <div style={{ ...font, ...at(200, 200) }}>What to</div>
+      <div style={{ ...font, ...at(200, 400) }}>do next</div>
+    </>
+  )],
+  [7, "outline text: a stroked copy stacked on a filled copy", (
+    <>
+      <div style={{ ...font, ...at(200, 200), fontSize: 120, WebkitTextStroke: "6px #000", color: "transparent" }}>OUTLINE</div>
+      <div style={{ ...font, ...at(200, 200), fontSize: 120, color: "#fc0" }}>OUTLINE</div>
+    </>
+  )],
+  [8, "an intended overlap, switched off on the second element", (
+    <>
+      <div style={{ ...font, ...at(400, 400) }}>Behind</div>
+      <div data-lint-ignore="overlap" style={{ ...font, ...at(420, 410), color: "#c00" }}>In front</div>
+    </>
+  )],
+  [9, "very tight caps headline", (
+    <div style={{ ...at(200, 300), fontFamily: "Helvetica, Arial, sans-serif", fontWeight: 800, fontSize: 120, lineHeight: 0.8 }}>
+      <div>BIG BOLD</div>
+      <div>HEADLINE</div>
+    </div>
+  )],
+  [10, "heading with a full-width accent bar as a child", (
+    <div style={{ ...font, ...at(300, 300), position: "absolute" }}>
+      Heading with a bar
+      <div style={{ position: "absolute", left: -300, top: 70, width: 1920, height: 6, background: "#2a6" }} />
+    </div>
+  )],
+  [11, "absolute text inside an overflow box that is not its containing block", (
+    <div style={{ width: 300, height: 50, overflow: "hidden", marginTop: 100, marginLeft: 100 }}>
+      <div style={{ ...font, ...at(700, 500) }}>Not clipped by that box</div>
+    </div>
+  )],
 ];
+
+const Push: React.FC = () => (
+  <div style={{ ...font, ...at(20, 500), transformOrigin: "left top", transform: `scale(${1 + useCurrentFrame() * 0.001})` }}>Parked at the edge</div>
+);
+
+const Twins: React.FC = () => {
+  const x = interpolate(useCurrentFrame(), [0, 29], [200, 600]);
+  return (
+    <>
+      <div style={{ ...font, ...at(x, 200) }}>Score board total</div>
+      <div style={{ ...at(200, 500), width: 200, overflow: "hidden" }}>
+        <div style={{ ...font, whiteSpace: "nowrap" }}>Score board total</div>
+      </div>
+    </>
+  );
+};
 
 /** Problems the first version missed. Each second must report exactly its kind. */
 export const MISSED: Array<[number, string, React.ReactNode]> = [
@@ -144,6 +195,20 @@ export const MISSED: Array<[number, string, React.ReactNode]> = [
   )],
   [6, "forbidden-word", <input readOnly value="nightjar" style={{ ...font, ...at(200, 200), width: 400 }} />],
   [7, "clean", <div data-lint-ignore="too-small" style={{ ...font, ...at(200, 200), fontSize: 14 }}>Small on purpose, and marked so</div>],
+  [8, "clipped", <div style={{ ...font, ...at(200, 200), width: 300, overflow: "hidden", whiteSpace: "nowrap" }}>Clipped by its own box</div>],
+  [9, "clipped", <div style={{ ...font, ...at(200, 200), width: 300, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>Cut short with an ellipsis</div>],
+  [10, "outside-safe-area", <Push />],
+  [11, "clipped", <Twins />],
+  [12, "outside-safe-area", (
+    <>
+      <div data-lint-layer="1" style={{ position: "absolute", inset: 0 }}>
+        <div style={{ ...font, ...at(20, 600) }}>Under a see-through layer</div>
+      </div>
+      <div data-lint-layer="2" style={{ position: "absolute", inset: 0 }}>
+        <div style={{ ...font, ...at(800, 400), opacity: 0.6 }}>Draft</div>
+      </div>
+    </>
+  )],
 ];
 
 const Strip: React.FC<{ items: Array<[number, string, React.ReactNode]> }> = ({ items }) => (
@@ -158,6 +223,11 @@ const Strip: React.FC<{ items: Array<[number, string, React.ReactNode]> }> = ({ 
 
 const WithProps: React.FC<{ title: string }> = ({ title }) => <div style={{ ...font, ...at(200, 200) }}>{title.toUpperCase()}</div>;
 
+const Noisy: React.FC = () => {
+  React.useEffect(() => console.error("Error: analytics beacon blocked"), []);
+  return <div style={{ ...font, ...at(200, 200) }}>Renders fine, logs an error</div>;
+};
+
 const Crash: React.FC = () => {
   throw new Error("this composition always fails");
 };
@@ -171,5 +241,6 @@ export const Root: React.FC = () => (
     <Composition id="Missed" component={() => <Strip items={MISSED} />} durationInFrames={MISSED.length * 30} fps={30} width={1920} height={1080} />
     <Composition id="WithProps" component={WithProps} defaultProps={{ title: "hello props" }} durationInFrames={30} fps={30} width={1920} height={1080} />
     <Composition id="Crash" component={Crash} durationInFrames={30} fps={30} width={1920} height={1080} />
+    <Composition id="Noisy" component={Noisy} durationInFrames={30} fps={30} width={1920} height={1080} />
   </>
 );
