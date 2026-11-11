@@ -6,7 +6,7 @@ import type { Config } from "./config.js";
 export interface MotionReport {
   frames: number;
   fps: number;
-  /** A frame-to-frame change far bigger than every change within two frames of it, not near a planned cut. */
+  /** A frame-to-frame change far bigger than the two nearest changes on each side (within 8 frames), not near a planned cut. */
   jumps: Array<{ t: number; diff: number; around: number }>;
   /** A single frame that differs from both neighbours while they match each other. */
   pops: Array<{ t: number; diff: number }>;
@@ -69,8 +69,15 @@ class Scanner {
     const d = this.diffs;
     const out: MotionReport = { frames: this.n, fps: round(fps), jumps: [], pops: this.pops.map((i, k) => ({ t: round(i / fps), diff: round(this.popDiffs[k]) })), frozen: [] };
     const nearPop = (i: number) => this.pops.some((p) => p === i || p === i + 1);
+    // Footage held for several frames (on threes, 10 fps in 30 fps) changes only every few frames, so compare each
+    // change with the nearest real changes either side, not with the held frames in between.
+    const nearest = (i: number, step: number) => {
+      const out: number[] = [];
+      for (let j = i + step; j >= 0 && j < d.length && Math.abs(j - i) <= 8 && out.length < 2; j += step) if (d[j] > 0.05) out.push(d[j]);
+      return out;
+    };
     d.forEach((v, i) => {
-      const around = Math.max(d[i - 2] ?? 0, d[i - 1] ?? 0, d[i + 1] ?? 0, d[i + 2] ?? 0);
+      const around = Math.max(0, ...nearest(i, -1), ...nearest(i, 1));
       const t = (i + 1) / fps;
       if (v > 6 && v > 4 * (around + 0.3) && !nearPop(i) && !opts.cuts.some((c) => Math.abs(t - c) < 0.07)) out.jumps.push({ t: round(t), diff: round(v), around: round(around) });
     });

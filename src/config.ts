@@ -12,10 +12,10 @@ export interface Config {
   /** Input props merged over each composition's resolved default props. */
   props: Record<string, unknown>;
   layout: {
-    /** Smallest allowed rendered font size in px, at the composition's own resolution. */
+    /** Smallest allowed rendered font size in px on a 1080p frame; scaled by the composition's shorter side / 1080. */
     minFontPx: number;
-    /** Distance from each edge that text must stay inside, in px. */
-    safeArea: number;
+    /** Margin text must stay inside on a 1080p frame: one number for every edge, or [left/right, top/bottom]. Scaled like minFontPx. */
+    safeArea: number | [number, number];
     /** Fraction of the smaller line box two text runs may share before it counts as an overlap. */
     overlap: number;
     /** Regular expressions (case-insensitive) that must never appear on screen. */
@@ -28,7 +28,7 @@ export interface Config {
     maxMismatchPct: number;
   };
   motion: {
-    /** Planned cuts in seconds; a jump within 0.07 s of one is not reported. */
+    /** Planned cuts in seconds; a jump within 0.07 s of one is not reported. `--cuts` adds to these. */
     cuts: number[];
     /** Report a stretch with no change at all longer than this many seconds. */
     frozenSeconds: number;
@@ -52,7 +52,7 @@ export const defineConfig = (c: UserConfig): UserConfig => c;
 export const defaults: Config = {
   entryPoint: "src/index.ts",
   props: {},
-  layout: { minFontPx: 28, safeArea: 100, overlap: 0.15, forbidden: [] },
+  layout: { minFontPx: 28, safeArea: [96, 54], overlap: 0.15, forbidden: [] },
   diff: { threshold: 0.12, maxMismatchPct: 10 },
   motion: { cuts: [], frozenSeconds: 2, failOnFrozen: false },
   browserChannel: "",
@@ -90,13 +90,13 @@ export function merge(user: UserConfig): Config {
   };
 }
 
-type Kind = "string" | "number" | "boolean" | "function" | "object" | "string[]" | "number[]";
+type Kind = "string" | "number" | "boolean" | "function" | "object" | "string[]" | "number[]" | "margin";
 const SCHEMA: Record<string, Kind | Record<string, Kind>> = {
   entryPoint: "string",
   webpackOverride: "function",
   props: "object",
   browserChannel: "string",
-  layout: { minFontPx: "number", safeArea: "number", overlap: "number", forbidden: "string[]" },
+  layout: { minFontPx: "number", safeArea: "margin", overlap: "number", forbidden: "string[]" },
   diff: { threshold: "number", maxMismatchPct: "number" },
   motion: { cuts: "number[]", frozenSeconds: "number", failOnFrozen: "boolean" },
 };
@@ -105,6 +105,7 @@ function check(value: unknown, kind: Kind): boolean {
   if (kind === "string[]") return Array.isArray(value) && value.every((v) => typeof v === "string");
   if (kind === "number[]") return Array.isArray(value) && value.every((v) => typeof v === "number" && Number.isFinite(v));
   if (kind === "object") return typeof value === "object" && value !== null && !Array.isArray(value);
+  if (kind === "margin") return check(value, "number") || (check(value, "number[]") && (value as number[]).length === 2);
   if (kind === "number") return typeof value === "number" && Number.isFinite(value);
   return typeof value === kind;
 }
@@ -123,7 +124,7 @@ export function validate(user: unknown, name = "config"): void {
     for (const [sub, v] of Object.entries(value as Record<string, unknown>)) {
       const kind = spec[sub];
       if (!kind) throw new Error(`${name}: unknown option "${key}.${sub}" (known: ${Object.keys(spec).join(", ")})`);
-      if (!check(v, kind)) throw new Error(`${name}: "${key}.${sub}" must be a ${kind}`);
+      if (!check(v, kind)) throw new Error(`${name}: "${key}.${sub}" must be ${kind === "margin" ? "a number or [x, y]" : `a ${kind}`}`);
     }
   }
   const u = user as UserConfig;
@@ -131,7 +132,7 @@ export function validate(user: unknown, name = "config"): void {
     if (v !== undefined && (v < min || v > max)) throw new Error(`${name}: "${label}" must be ${max === Infinity ? `at least ${min}` : `between ${min} and ${max}`}, got ${v}`);
   };
   range("layout.minFontPx", u.layout?.minFontPx, 0);
-  range("layout.safeArea", u.layout?.safeArea, 0);
+  for (const v of [u.layout?.safeArea ?? []].flat()) range("layout.safeArea", v, 0);
   range("layout.overlap", u.layout?.overlap, 0, 1);
   range("diff.threshold", u.diff?.threshold, 0, 1);
   range("diff.maxMismatchPct", u.diff?.maxMismatchPct, 0, 100);
@@ -144,4 +145,11 @@ export function validate(user: unknown, name = "config"): void {
       throw new Error(`${name}: layout.forbidden "${f}" is not a valid regular expression`);
     }
   }
+}
+
+/** The layout rules for a `width`x`height` composition: pixel sizes are given for a 1080p frame and scale with the shorter side. */
+export function scaleLayout(layout: Config["layout"], width: number, height: number): Config["layout"] & { safeX: number; safeY: number } {
+  const k = Math.min(width, height) / 1080;
+  const [x, y] = typeof layout.safeArea === "number" ? [layout.safeArea, layout.safeArea] : layout.safeArea;
+  return { ...layout, minFontPx: layout.minFontPx * k, safeX: x * k, safeY: y * k };
 }

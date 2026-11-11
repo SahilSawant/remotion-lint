@@ -2,6 +2,7 @@ import { bundle, type WebpackOverrideFn } from "@remotion/bundler";
 import { chromium, type Browser, type Page } from "playwright";
 import fs from "node:fs";
 import http from "node:http";
+import { createRequire } from "node:module";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -27,6 +28,8 @@ export interface OpenOptions {
   channel?: string;
   props?: Record<string, unknown>;
   webpackOverride?: WebpackOverrideFn;
+  /** Called at once with the function that removes the temporary bundle and closes the browser, so an interrupt can run it mid-build. */
+  onCleanup?: (cleanup: () => Promise<void>) => void;
 }
 
 const TYPES: Record<string, string> = {
@@ -97,7 +100,10 @@ function serve(dir: string): Promise<http.Server> {
     res.writeHead(200, { "content-type": type, "accept-ranges": "bytes", "content-length": size });
     fs.createReadStream(p).pipe(res);
   });
-  return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server)));
+  return new Promise((resolve, reject) => {
+    server.once("error", (e) => reject(new Error(`could not start a local server for the bundle: ${e.message}`)));
+    server.listen(0, "127.0.0.1", () => resolve(server));
+  });
 }
 
 /**
@@ -113,21 +119,24 @@ const RENDER_ERROR = /error occurred in the <|\bat (?:renderWithHooks|beginWork|
  * same window hooks its own renderer drives (`remotion_setBundleMode`, `remotion_setFrame`,
  * `remotion_renderReady`). They are kept to this one function so a Remotion change breaks one place.
  */
-export async function openComposition({ entryPoint, id, channel, props, webpackOverride }: OpenOptions): Promise<CompositionPage> {
+export async function openComposition({ entryPoint, id, channel, props, webpackOverride, onCleanup }: OpenOptions): Promise<CompositionPage> {
   if (!fs.existsSync(entryPoint)) throw new Error(`entry point not found: ${entryPoint} (set entryPoint in remotion-lint.config.mjs)`);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "remotion-lint-bundle-"));
   let server: http.Server | undefined;
   let browser: Browser | undefined;
-  const cleanup = async () => {
-    await browser?.close().catch(() => {});
-    server?.close();
-    fs.rmSync(dir, { recursive: true, force: true });
-  };
+  let closing: Promise<void> | undefined;
+  const cleanup = () =>
+    (closing ??= (async () => {
+      fs.rmSync(dir, { recursive: true, force: true });
+      server?.close();
+      await browser?.close().catch(() => {});
+    })());
+  onCleanup?.(cleanup);
   try {
+    browser = await launch(channel);
     await bundle({ entryPoint, outDir: dir, webpackOverride: webpackOverride ?? ((c) => c) });
     server = await serve(dir);
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-    browser = await chromium.launch(channel ? { channel } : {});
     const page = await browser.newPage({ deviceScaleFactor: 1 });
     await page.addInitScript(renderEnvironment, JSON.stringify(props ?? {}));
     const errors: string[] = [];
@@ -144,12 +153,23 @@ export async function openComposition({ entryPoint, id, channel, props, webpackO
     await page.waitForFunction(() => (window as any).remotion_renderReady === true || !!(window as any).remotion_cancelledError, null, { timeout: 60_000 });
     const meta = await page.evaluate(async (compId) => {
       const w = window as any;
-      const ids: string[] = typeof w.remotion_getCompositionNames === "function" ? w.remotion_getCompositionNames() : (await w.getStaticCompositions()).map((x: any) => x.id);
-      if (!ids.includes(compId)) return { found: false as const, ids };
-      const c = typeof w.remotion_calculateComposition === "function" ? await w.remotion_calculateComposition(compId) : (await w.getStaticCompositions()).find((x: any) => x.id === compId);
-      return { found: true as const, fps: c.fps as number, durationInFrames: c.durationInFrames as number, width: c.width as number, height: c.height as number, props: c.serializedResolvedPropsWithCustomSchema as string };
+      const step = async <T>(what: string, f: () => T | Promise<T>) => {
+        try {
+          return { ok: await f() };
+        } catch (e) {
+          return { error: `${what} threw: ${String((e as Error)?.message ?? e).split("\n")[0]}` };
+        }
+      };
+      const names = await step("listing compositions", async (): Promise<string[]> => typeof w.remotion_getCompositionNames === "function" ? w.remotion_getCompositionNames() : (await w.getStaticCompositions()).map((x: any) => x.id));
+      if ("error" in names) return { error: names.error };
+      const ids = names.ok;
+      if (!ids.includes(compId)) return { error: `no composition "${compId}"; found: ${ids.join(", ") || "none"}` };
+      const calc = await step(`calculateMetadata of ${compId}`, async () => typeof w.remotion_calculateComposition === "function" ? w.remotion_calculateComposition(compId) : (await w.getStaticCompositions()).find((x: any) => x.id === compId));
+      if ("error" in calc) return { error: calc.error };
+      const c = calc.ok;
+      return { fps: c.fps as number, durationInFrames: c.durationInFrames as number, width: c.width as number, height: c.height as number, props: c.serializedResolvedPropsWithCustomSchema as string };
     }, id);
-    if (!meta.found) throw new Error(`no composition "${id}"; found: ${meta.ids.join(", ") || "none"}`);
+    if ("error" in meta) throw new Error(meta.error);
     await page.setViewportSize({ width: meta.width, height: meta.height });
     await page.evaluate(([compId, m, p]) => {
       (window as any).remotion_setBundleMode({
@@ -164,7 +184,9 @@ export async function openComposition({ entryPoint, id, channel, props, webpackO
     const ready = async (frame: number) => {
       try {
         await page.waitForFunction(() => (window as any).remotion_renderReady === true || !!(window as any).remotion_cancelledError, null, { timeout: 60_000 });
-      } catch {
+      } catch (e) {
+        if (page.isClosed()) throw new Error("the browser page closed while a frame was loading");
+        if (!/Timeout/i.test((e as Error).message)) throw e;
         throw new Error(`frame ${frame} was not ready after 60 s (a delayRender() that never resolves, or media the browser cannot play; try browserChannel: "chrome")`);
       }
       const cancelled = await page.evaluate(() => (window as any).remotion_cancelledError as string | undefined);
@@ -195,5 +217,17 @@ export async function openComposition({ entryPoint, id, channel, props, webpackO
   } catch (e) {
     await cleanup();
     throw e;
+  }
+}
+
+/** Launches Chromium, explaining how to install it for remotion-lint's own copy of Playwright when it is missing. */
+async function launch(channel?: string): Promise<Browser> {
+  try {
+    return await chromium.launch(channel ? { channel } : {});
+  } catch (e) {
+    const msg = (e as Error).message;
+    if (channel || !/Executable doesn't exist/i.test(msg)) throw e;
+    const cli = path.join(path.dirname(createRequire(import.meta.url).resolve("playwright/package.json")), "cli.js");
+    throw new Error(`Chromium is not installed for remotion-lint's copy of Playwright. Run:\n  node "${cli}" install chromium\n(${msg.split("\n")[0]})`);
   }
 }

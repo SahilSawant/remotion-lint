@@ -24,9 +24,10 @@ function crop(src: PNG, x: number, y: number, w: number, h: number): PNG {
 /**
  * Compares `[data-lint="screen"]` with `[data-lint="ref"]` on the frame currently shown.
  * The reference is usually a screenshot of the real app placed beside the rebuilt component
- * in a test composition. Returns null when the frame has no such pair.
+ * in a test composition. Returns why nothing was compared when the frame has no usable pair, and
+ * throws when the two boxes overlap, because both crops would then show the same blended pixels.
  */
-export async function diffFrame(page: Page, threshold: number): Promise<DiffResult | null> {
+export async function diffFrame(page: Page, threshold: number): Promise<DiffResult | { skipped: string }> {
   const boxes = await page.evaluate(() =>
     ["screen", "ref"].map((k) => {
       const e = document.querySelector(`[data-lint="${k}"]`);
@@ -36,13 +37,16 @@ export async function diffFrame(page: Page, threshold: number): Promise<DiffResu
     }),
   );
   const [s, r] = boxes;
-  if (!s || !r) return null;
+  if (!s || !r) return { skipped: `no [data-lint="${s ? "ref" : "screen"}"] on this frame` };
+  if (s.x < r.x + r.w && r.x < s.x + s.w && s.y < r.y + r.h && r.y < s.y + s.h) {
+    throw new Error(`[data-lint="screen"] and [data-lint="ref"] overlap; place them side by side so each can be captured on its own`);
+  }
   const shot = PNG.sync.read(await page.screenshot());
   // Compare the same local area of both boxes: the part that is on screen for both.
   const x0 = Math.max(0, -s.x, -r.x), y0 = Math.max(0, -s.y, -r.y);
   const x1 = Math.min(s.w, r.w, shot.width - s.x, shot.width - r.x), y1 = Math.min(s.h, r.h, shot.height - s.y, shot.height - r.y);
   const w = x1 - x0, h = y1 - y0;
-  if (w < 1 || h < 1) return null;
+  if (w < 1 || h < 1) return { skipped: `the screen (${s.w}x${s.h}) or ref (${r.w}x${r.h}) box is empty or off screen` };
   const a = crop(shot, s.x + x0, s.y + y0, w, h);
   const b = crop(shot, r.x + x0, r.y + y0, w, h);
   const diff = new PNG({ width: w, height: h });

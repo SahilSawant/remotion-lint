@@ -43,6 +43,18 @@ test("a wipe animated on twos is motion, not a jump per step", () => {
   assert.deepEqual(analyse([...hold(30, 40), ...steps, ...hold(30, 200)], 30, opts).jumps, []);
 });
 
+test("footage held for three or four frames (10 fps in 30 fps) is motion, not a jump per step", () => {
+  for (const k of [3, 4]) {
+    const steps = wipe(12, 40, 200).flatMap((f) => Array.from({ length: k }, () => f));
+    assert.deepEqual(analyse([...hold(30, 40), ...steps, ...hold(30, 200)], 30, opts).jumps, [], `held ${k} frames`);
+  }
+});
+
+test("a hard cut between two still shots is still a jump", () => {
+  const r = analyse([...hold(30, 40), ...hold(30, 200), ...hold(30, 90)], 30, opts);
+  assert.deepEqual(r.jumps.map((j) => j.t), [1, 2]);
+});
+
 test("a hard cut straight into a long wipe is still a jump", () => {
   const r = analyse([...hold(30, 40), ...wipe(30, 200, 100), ...hold(30, 100)], 30, opts);
   assert.deepEqual(r.jumps.map((j) => j.t), [1]);
@@ -90,5 +102,8 @@ test("the CLI decodes a real video end to end", { skip: !hasFfmpeg && "ffmpeg no
   assert.equal(report.fps, 30);
   assert.deepEqual(report.pops.map((p) => p.t), [3]);
   assert.deepEqual(report.jumps.map((j) => j.t), [2.27]);
+  assert.match(spawnSync(process.execPath, [cli, "motion", video, "--out", dir], { encoding: "utf8" }).stdout, /--cuts 2\.27/);
+  const planned = JSON.parse(spawnSync(process.execPath, [cli, "motion", video, "--json", "--out", dir, "--cuts", "2.27"], { encoding: "utf8" }).stdout);
+  assert.deepEqual([planned.jumps, planned.pops.map((p) => p.t)], [[], [3]]);
   assert.equal(r.status, 1);
 });

@@ -2,7 +2,7 @@ import React from "react";
 import { TransitionSeries, linearTiming } from "@remotion/transitions";
 import { fade } from "@remotion/transitions/fade";
 import { wipe } from "@remotion/transitions/wipe";
-import { AbsoluteFill, Composition, interpolate, Sequence, spring, useCurrentFrame, useVideoConfig } from "remotion";
+import { AbsoluteFill, Composition, Img, interpolate, Sequence, spring, useCurrentFrame, useVideoConfig } from "remotion";
 
 const font: React.CSSProperties = { fontFamily: "Helvetica, Arial, sans-serif", fontSize: 48, color: "#111" };
 const at = (left: number, top: number): React.CSSProperties => ({ position: "absolute", left, top });
@@ -152,6 +152,48 @@ export const ORDINARY: Array<[number, string, React.ReactNode]> = [
       <div style={{ ...font, ...at(700, 500) }}>Not clipped by that box</div>
     </div>
   )],
+  [12, "a giant pale chapter number behind a title", (
+    <>
+      <div style={{ ...font, ...at(200, 120), fontSize: 400, fontWeight: 900, color: "#eeeeee" }}>01</div>
+      <div style={{ ...font, ...at(260, 300), fontSize: 72 }}>Chapter one</div>
+    </>
+  )],
+  [13, "a retro offset copy of a headline", (
+    <>
+      <div style={{ ...font, ...at(206, 206), fontSize: 120, fontWeight: 900, color: "#f0f" }}>RETRO</div>
+      <div style={{ ...font, ...at(200, 200), fontSize: 120, fontWeight: 900, color: "#0cf" }}>RETRO</div>
+    </>
+  )],
+  [14, "a marker highlight drawn over a word, multiplied", (
+    <>
+      <div style={{ ...font, ...at(200, 400) }}>A marked word</div>
+      <div style={{ ...at(395, 392), width: 130, height: 66, background: "#ffe066", mixBlendMode: "multiply" }} />
+    </>
+  )],
+  [15, "subtitles 70 px above the bottom edge", <div style={{ ...font, position: "absolute", left: 400, bottom: 70 }}>Subtitles sit low on the frame</div>],
+];
+
+const caption = <div style={{ ...font, ...at(200, 500), fontSize: 14 }}>Fine print nobody can read</div>;
+const PushIn: React.FC = () => (
+  <AbsoluteFill style={{ transform: `scale(${1 + useCurrentFrame() * 0.001})` }}>
+    <div style={{ ...font, ...at(200, 900), fontSize: 14 }}>Fine print on a slow push-in</div>
+  </AbsoluteFill>
+);
+
+/** Finishing layers and camera moves that must not hide a problem underneath. Each second must report its kind. */
+export const OVERLAYS: Array<[number, string, React.ReactNode]> = [
+  [0, "too-small", <>{caption}<AbsoluteFill style={{ background: "radial-gradient(circle, transparent 60%, rgba(0,0,0,.5))" }} /></>],
+  [1, "too-small", <>{caption}<AbsoluteFill style={{ background: "#ff8800", mixBlendMode: "multiply" }} /></>],
+  [2, "too-small", <>{caption}<AbsoluteFill style={{ background: "rgba(0,0,0,0.15)" }} /></>],
+  [3, "too-small", (
+    <>
+      <Img src={`data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="16" height="9"><rect width="16" height="9" fill="#cde"/></svg>')}`} style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }} />
+      <AbsoluteFill style={{ pointerEvents: "none" }}>{caption}</AbsoluteFill>
+    </>
+  )],
+  [4, "forbidden-word", <div style={{ ...font, ...at(200, 300), fontSize: 120, fontWeight: 900, opacity: 0.4 }}>NIGHTJAR DRAFT</div>],
+  [5, "clean", <>{caption}<AbsoluteFill style={{ background: "#fff" }} /></>],
+  [6, "too-small", <PushIn />],
 ];
 
 const Push: React.FC = () => (
@@ -284,6 +326,7 @@ export const STATIC: Array<[number, string, React.ReactNode]> = [
   [2, "outside-safe-area", <div style={{ ...font, fontSize: 72, ...at(960, 100), transform: "rotate(90deg)", transformOrigin: "left top", whiteSpace: "nowrap" }}>A sideways label that runs off the bottom</div>],
   [3, "clean", <div style={{ ...font, ...at(200, 200), clipPath: "inset(0 100% 0 0)" }}>Nightjar, hidden by a clip-path before its reveal</div>],
   [4, "clipped", <Counter />],
+  [5, "clipped", <div style={{ ...font, ...at(1600, 400), whiteSpace: "nowrap" }}>A title that runs off the right edge</div>],
 ];
 
 const Meta: React.FC<{ n: number }> = ({ n }) => <div style={{ ...font, ...at(200, 200) }}>{n} seconds long</div>;
@@ -309,6 +352,21 @@ export const Root: React.FC = () => (
       <AbsoluteFill style={{ background: "#fff", flexDirection: "row", alignItems: "flex-start", gap: 100, padding: 200 }}>
         <div data-lint="screen" style={{ width: 300, height: 600, background: "#f4f4f4" }} />
         <div data-lint="ref" style={{ width: 300, height: 200, background: "#f4f4f4" }} />
+      </AbsoluteFill>
+    )} durationInFrames={30} fps={30} width={1920} height={1080} />
+    <Composition id="Overlays" component={() => <Strip items={OVERLAYS} />} durationInFrames={OVERLAYS.length * 30} fps={30} width={1920} height={1080} />
+    <Composition id="FourK" component={() => <div style={{ ...font, ...at(400, 400), fontSize: 30 }}>Thirty pixels on a 4K frame</div>} durationInFrames={30} fps={30} width={3840} height={2160} />
+    <Composition id="BadMeta" component={Meta} defaultProps={{ n: 1 }} calculateMetadata={() => { throw new Error("metadata exploded"); }} fps={30} width={1920} height={1080} />
+    <Composition id="DiffOnion" component={() => (
+      <AbsoluteFill style={{ background: "#fff" }}>
+        <div data-lint="screen" style={at(200, 200)}><Card variant="b" /></div>
+        <div data-lint="ref" style={{ ...at(200, 200), opacity: 0.5 }}><Card variant="a" /></div>
+      </AbsoluteFill>
+    )} durationInFrames={30} fps={30} width={1920} height={1080} />
+    <Composition id="DiffEmpty" component={() => (
+      <AbsoluteFill style={{ background: "#fff", flexDirection: "row", alignItems: "flex-start", gap: 100, padding: 200 }}>
+        <div data-lint="screen" style={{ position: "relative" }}><div style={{ position: "absolute" }}><Card variant="a" /></div></div>
+        <div data-lint="ref"><Card variant="a" /></div>
       </AbsoluteFill>
     )} durationInFrames={30} fps={30} width={1920} height={1080} />
     <Composition id="Meta" component={Meta} defaultProps={{ n: 1 }} calculateMetadata={({ props }) => ({ durationInFrames: props.n * 30 })} fps={30} width={1920} height={1080} />
