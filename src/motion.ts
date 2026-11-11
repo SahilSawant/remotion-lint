@@ -75,9 +75,12 @@ class Scanner {
       if (v > 6 && v > 4 * (around + 0.3) && !nearPop(i) && !opts.cuts.some((c) => Math.abs(t - c) < 0.07)) out.jumps.push({ t: round(t), diff: round(v), around: round(around) });
     });
     const minRun = Math.round(opts.frozenSeconds * fps);
+    // A lossy codec refreshes a still picture at each keyframe: one small blip inside a still stretch is not motion.
+    const flat = d.map((v) => v < 0.02);
+    const isStill = (i: number) => flat[i] || (d[i] < 2 && !!flat[i - 1] && !!flat[i + 1]);
     let start = -1;
     for (let i = 0; i <= d.length; i++) {
-      const still = i < d.length && d[i] < 0.02;
+      const still = i < d.length && isStill(i);
       if (still && start < 0) start = i;
       if (!still && start >= 0) {
         if (i - start >= minRun) out.frozen.push([round(start / fps), round(i / fps)]);

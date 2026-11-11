@@ -1,5 +1,8 @@
 import React from "react";
-import { AbsoluteFill, Composition, interpolate, Sequence, useCurrentFrame } from "remotion";
+import { TransitionSeries, linearTiming } from "@remotion/transitions";
+import { fade } from "@remotion/transitions/fade";
+import { wipe } from "@remotion/transitions/wipe";
+import { AbsoluteFill, Composition, interpolate, Sequence, spring, useCurrentFrame, useVideoConfig } from "remotion";
 
 const font: React.CSSProperties = { fontFamily: "Helvetica, Arial, sans-serif", fontSize: 48, color: "#111" };
 const at = (left: number, top: number): React.CSSProperties => ({ position: "absolute", left, top });
@@ -228,6 +231,63 @@ const Noisy: React.FC = () => {
   return <div style={{ ...font, ...at(200, 200) }}>Renders fine, logs an error</div>;
 };
 
+const Counter: React.FC = () => {
+  const f = useCurrentFrame();
+  return (
+    <div style={{ ...at(200, 300), width: 160, overflow: "hidden", transformOrigin: "left top", transform: `scale(${1 + f * 0.0015})` }}>
+      <div style={{ ...font, whiteSpace: "nowrap" }}>${(1_000_000 + Math.floor(f / 3) * 1234).toLocaleString("en-US")}</div>
+    </div>
+  );
+};
+
+const ScalePop: React.FC = () => {
+  const { fps } = useVideoConfig();
+  return <div style={{ ...font, ...at(400, 400), fontSize: 72, transform: `scale(${spring({ frame: useCurrentFrame(), fps })})` }}>Pop in</div>;
+};
+
+const CardRise: React.FC = () => {
+  const y = interpolate(useCurrentFrame(), [0, 15], [60, 0], { extrapolateRight: "clamp" });
+  return (
+    <div style={{ ...at(300, 300), width: 500, height: 120, background: "#eef2f7" }}>
+      <div style={{ ...font, position: "absolute", left: 24, top: 30 + y }}>Rising into its card</div>
+    </div>
+  );
+};
+
+const Title: React.FC<{ text: string; bg: string }> = ({ text, bg }) => (
+  <AbsoluteFill style={{ background: bg, justifyContent: "center", alignItems: "center" }}>
+    <div style={font}>{text}</div>
+  </AbsoluteFill>
+);
+
+/** Two centred titles joined by Remotion's own transitions: fade, then wipe. */
+const Transitions: React.FC = () => (
+  <TransitionSeries>
+    <TransitionSeries.Sequence durationInFrames={60}><Title text="First scene title" bg="#fff" /></TransitionSeries.Sequence>
+    <TransitionSeries.Transition presentation={fade()} timing={linearTiming({ durationInFrames: 30 })} />
+    <TransitionSeries.Sequence durationInFrames={60}><Title text="Second scene title" bg="#f4f4f4" /></TransitionSeries.Sequence>
+    <TransitionSeries.Transition presentation={wipe()} timing={linearTiming({ durationInFrames: 30 })} />
+    <TransitionSeries.Sequence durationInFrames={60}><Title text="Third scene title" bg="#fff" /></TransitionSeries.Sequence>
+  </TransitionSeries>
+);
+
+/** Moving or changing text: shown as warnings, never counted. */
+export const MOVING: Array<[number, string, React.ReactNode]> = [
+  [0, "a spring scale-in starting from zero", <ScalePop />],
+  [1, "text rising into its card", <CardRise />],
+];
+
+/** Problems that stay put. Each must fail even inside short scenes. */
+export const STATIC: Array<[number, string, React.ReactNode]> = [
+  [0, "clipped", <div style={{ ...font, ...at(200, 200), width: 420, overflow: "hidden", whiteSpace: "nowrap" }}>A headline truncated for the whole scene</div>],
+  [1, "clipped", <div style={{ ...font, ...at(200, 200), width: 420, overflow: "hidden", whiteSpace: "nowrap" }}>Another headline cut for its scene</div>],
+  [2, "outside-safe-area", <div style={{ ...font, fontSize: 72, ...at(960, 100), transform: "rotate(90deg)", transformOrigin: "left top", whiteSpace: "nowrap" }}>A sideways label that runs off the bottom</div>],
+  [3, "clean", <div style={{ ...font, ...at(200, 200), clipPath: "inset(0 100% 0 0)" }}>Nightjar, hidden by a clip-path before its reveal</div>],
+  [4, "clipped", <Counter />],
+];
+
+const Meta: React.FC<{ n: number }> = ({ n }) => <div style={{ ...font, ...at(200, 200) }}>{n} seconds long</div>;
+
 const Crash: React.FC = () => {
   throw new Error("this composition always fails");
 };
@@ -242,5 +302,15 @@ export const Root: React.FC = () => (
     <Composition id="WithProps" component={WithProps} defaultProps={{ title: "hello props" }} durationInFrames={30} fps={30} width={1920} height={1080} />
     <Composition id="Crash" component={Crash} durationInFrames={30} fps={30} width={1920} height={1080} />
     <Composition id="Noisy" component={Noisy} durationInFrames={30} fps={30} width={1920} height={1080} />
+    <Composition id="Moving" component={() => <Strip items={MOVING} />} durationInFrames={MOVING.length * 30} fps={30} width={1920} height={1080} />
+    <Composition id="Static" component={() => <Strip items={STATIC} />} durationInFrames={STATIC.length * 30} fps={30} width={1920} height={1080} />
+    <Composition id="Transitions" component={Transitions} durationInFrames={120} fps={30} width={1920} height={1080} />
+    <Composition id="DiffSize" component={() => (
+      <AbsoluteFill style={{ background: "#fff", flexDirection: "row", alignItems: "flex-start", gap: 100, padding: 200 }}>
+        <div data-lint="screen" style={{ width: 300, height: 600, background: "#f4f4f4" }} />
+        <div data-lint="ref" style={{ width: 300, height: 200, background: "#f4f4f4" }} />
+      </AbsoluteFill>
+    )} durationInFrames={30} fps={30} width={1920} height={1080} />
+    <Composition id="Meta" component={Meta} defaultProps={{ n: 1 }} calculateMetadata={({ props }) => ({ durationInFrames: props.n * 30 })} fps={30} width={1920} height={1080} />
   </>
 );

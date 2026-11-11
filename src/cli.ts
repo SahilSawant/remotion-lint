@@ -4,7 +4,6 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 import { loadConfig, type Config } from "./config.js";
 import type { FrameMeasure, Issue } from "./layout.js";
-import type { CompositionPage } from "./page.js";
 
 const USAGE = `remotion-lint <command> [options]
 
@@ -93,9 +92,14 @@ async function motion(video: string, config: Config, log: (s: string) => void) {
 
 async function frames(command: string, id: string, rest: string[], every: string | undefined, config: Config, root: string, outDir: string, log: (s: string) => void) {
   if (every && rest.length) throw new UsageError("give either seconds or --every, not both");
-  const [{ openComposition }, { lintFrame, screenshotWithMarks, still, TRANSIENT }, { diffFrame }] = await Promise.all([import("./page.js"), import("./layout.js"), import("./diff.js")]);
+  const [{ openComposition }, { lintFrame, screenshotWithMarks, moved }, { diffFrame }] = await Promise.all([import("./page.js"), import("./layout.js"), import("./diff.js")]);
   const comp = await openComposition({ entryPoint: path.resolve(root, config.entryPoint), id, channel: config.browserChannel, props: config.props, webpackOverride: config.webpackOverride });
   const tag = (sec: number) => `t${sec.toFixed(2).padStart(6, "0")}`;
+  const interrupted = () => {
+    comp.close().finally(() => process.exit(130));
+  };
+  process.once("SIGINT", interrupted);
+  process.once("SIGTERM", interrupted);
   try {
     const last = (comp.durationInFrames - 1) / comp.fps;
     let secs: number[];
@@ -109,36 +113,51 @@ async function frames(command: string, id: string, rest: string[], every: string
     }
     if (!secs.length) throw new UsageError("give seconds to check, or --every <s>");
     const bad = rest.find((s, i) => !Number.isFinite(secs[i]) || secs[i] < 0 || secs[i] > last);
-    if (bad !== undefined) throw new UsageError(`${bad}s is outside ${id}, which runs 0 to ${last.toFixed(2)}s`);
+    if (bad !== undefined) {
+      throw new UsageError(Number.isFinite(Number(bad)) ? `${bad}s is outside ${id}, which runs 0 to ${last.toFixed(2)}s` : `"${bad}" is not a number of seconds`);
+    }
+
+    const cache = new Map<number, FrameMeasure>();
+    const measureAt = async (g: number) => {
+      if (!cache.has(g)) {
+        await comp.seek(g);
+        cache.set(g, await lintFrame(comp.page, config.layout, comp.width, comp.height));
+      }
+      return cache.get(g)!;
+    };
+    const warnings: Array<{ sec: number; message: string }> = [];
+    const collect = (sec: number) => {
+      for (const message of comp.warnings.splice(0)) {
+        warnings.push({ sec, message });
+        log(`${sec}s  warning: the page logged "${message}"`);
+      }
+    };
 
     let failures = 0;
     let paired = 0;
     const out: Array<Record<string, unknown>> = [];
     for (const sec of secs) {
       const frame = Math.round(sec * comp.fps);
-      await comp.seek(frame);
       if (command === "layout") {
-        const m = await lintFrame(comp.page, config.layout, comp.width, comp.height);
-        let issues: Issue[] = m.issues;
-        let moving: Array<Issue & { settledAt: number | null }> = [];
-        const transient = issues.filter((i) => TRANSIENT.includes(i.kind) && i.keys.length);
-        if (transient.length) {
-          const measureAt = async (g: number) => {
-            await comp.seek(g);
-            return lintFrame(comp.page, config.layout, comp.width, comp.height);
-          };
-          moving = await settle(comp, frame, m, transient, measureAt, still);
-          issues = issues.filter((i) => !moving.some((x) => x.kind === i.kind && x.keys.join("|") === i.keys.join("|")));
-          await comp.seek(frame);
-        }
+        const m = await measureAt(frame);
+        const keyed = m.issues.filter((i) => i.keys.length);
+        const neighbours: FrameMeasure[] = [];
+        if (keyed.length) for (const g of [frame - 1, frame + 1]) if (g >= 0 && g < comp.durationInFrames) neighbours.push(await measureAt(g));
+        const moving = keyed.filter((i) => neighbours.some((n) => moved(i.keys, m.runs, n.runs)));
+        const issues: Issue[] = m.issues.filter((i) => !moving.includes(i));
         failures += issues.length;
-        out.push({ sec, texts: m.texts, issues, skippedWhileMoving: moving });
-        for (const w of comp.warnings.splice(0)) log(`${sec}s  warning: the page logged "${w}"`);
-        if (issues.length) await screenshotWithMarks(comp.page, issues, config.layout.safeArea, path.join(outDir, `${tag(sec)}.png`));
-        const note = moving.length ? `  (${moving.length} skipped while moving)` : "";
-        log(`${sec}s  ${m.texts} text runs  ${issues.length ? issues.map(describe).join(" | ") : "clean"}${note}`);
+        collect(sec);
+        out.push({ sec, texts: m.texts, issues, moving });
+        if (issues.length) {
+          await comp.seek(frame);
+          await screenshotWithMarks(comp.page, issues, config.layout.safeArea, path.join(outDir, `${tag(sec)}.png`));
+        }
+        log(`${sec}s  ${m.texts} text runs  ${issues.length ? issues.map(describe).join(" | ") : "clean"}`);
+        for (const i of moving) log(`        moving, not counted: ${describe(i)}`);
       } else {
+        await comp.seek(frame);
         const d = await diffFrame(comp.page, config.diff.threshold);
+        collect(sec);
         if (!d) {
           log(`${sec}s  no [data-lint="screen"] and [data-lint="ref"] pair on this frame`);
           continue;
@@ -157,52 +176,12 @@ async function frames(command: string, id: string, rest: string[], every: string
       failures++;
       log(`no frame had a [data-lint="screen"] and [data-lint="ref"] pair, so nothing was compared`);
     }
-    return { failures, report: { composition: id, fps: comp.fps, width: comp.width, height: comp.height, frames: out } };
+    return { failures, report: { composition: id, fps: comp.fps, width: comp.width, height: comp.height, frames: out, warnings } };
   } finally {
+    process.off("SIGINT", interrupted);
+    process.off("SIGTERM", interrupted);
     await comp.close();
   }
-}
-
-/**
- * Follows moving text forward, up to one second, until it stops. A problem is skipped only when the
- * text was moving at `frame` and either settles without the problem or slides out of view (it was
- * already partly off-frame or masked when it disappeared). Text that never settles within the second,
- * still has the problem once settled, or simply vanishes at a cut, is counted.
- */
-async function settle(
-  comp: CompositionPage,
-  frame: number,
-  now: FrameMeasure,
-  list: Issue[],
-  measureAt: (frame: number) => Promise<FrameMeasure>,
-  still: (keys: string[], a: FrameMeasure["runs"], b: FrameMeasure["runs"]) => boolean,
-): Promise<Array<Issue & { settledAt: number | null }>> {
-  const last = Math.min(comp.durationInFrames - 1, frame + Math.round(comp.fps));
-  const pending = new Set(list);
-  const skipped: Array<Issue & { settledAt: number | null }> = [];
-  let prev = now.runs;
-  for (let g = frame + 1; g <= last && pending.size; g++) {
-    const m = await measureAt(g);
-    for (const i of [...pending]) {
-      const present = i.keys.every((k) => m.runs.some((r) => r.key === k));
-      if (!present) {
-        pending.delete(i);
-        const exiting = i.keys.some((k) => {
-          const r = prev.find((x) => x.key === k);
-          return !!r && r.visible.w * r.visible.h < r.full.w * r.full.h - 1;
-        });
-        if (g > frame + 1 && exiting) skipped.push({ ...i, settledAt: null });
-        continue;
-      }
-      if (!still(i.keys, prev, m.runs)) continue;
-      pending.delete(i);
-      if (g === frame + 1) continue;
-      const persists = m.issues.some((x) => x.kind === i.kind && x.keys.join("|") === i.keys.join("|"));
-      if (!persists) skipped.push({ ...i, settledAt: Math.round(((g - 1) / comp.fps) * 100) / 100 });
-    }
-    prev = m.runs;
-  }
-  return skipped;
 }
 
 function describe(i: Issue): string {

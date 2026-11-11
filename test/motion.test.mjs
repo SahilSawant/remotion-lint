@@ -62,14 +62,27 @@ test("a still stretch reports its first and last still frame", () => {
   assert.deepEqual(r.frozen, [[1, 3.97]]);
 });
 
-const hasFfmpeg = spawnSync("ffmpeg", ["-version"]).status === 0;
+const FFMPEG = process.env.REMOTION_LINT_FFMPEG || "ffmpeg";
+const hasFfmpeg = spawnSync(FFMPEG, ["-version"]).status === 0;
+if (!hasFfmpeg && process.env.REMOTION_LINT_REQUIRE_FFMPEG) throw new Error("ffmpeg is required for this run but was not found");
+
+test("a still picture in a lossy video is one frozen stretch, not split at keyframes", { skip: !hasFfmpeg && "ffmpeg not installed" }, () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "remotion-lint-motion-"));
+  const video = path.join(dir, "still.mp4");
+  const pic = new Uint8Array(W * H).map((_, i) => (i * 7919) % 251);
+  const f = Array.from({ length: 300 }, () => pic);
+  const enc = spawnSync(FFMPEG, ["-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "gray", "-s", `${W}x${H}`, "-r", "30", "-i", "-", "-c:v", "libx264", "-crf", "18", "-g", "100", "-pix_fmt", "yuv420p", video], { input: Buffer.concat(f.map((x) => Buffer.from(x))) });
+  assert.equal(enc.status, 0, enc.stderr?.toString());
+  const r = spawnSync(process.execPath, [cli, "motion", video, "--json", "--out", dir], { encoding: "utf8" });
+  assert.equal(JSON.parse(r.stdout).frozen.length, 1);
+});
 
 test("the CLI decodes a real video end to end", { skip: !hasFfmpeg && "ffmpeg not installed" }, () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "remotion-lint-motion-"));
   const video = path.join(dir, "clip.mp4");
   const f = [...hold(30, 40), ...wipe(8, 40, 200), ...hold(30, 200), ...hold(30, 60)];
   f[90] = frame(220);
-  const enc = spawnSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "gray", "-s", `${W}x${H}`, "-r", "30", "-i", "-", "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv420p", video], { input: Buffer.concat(f.map((x) => Buffer.from(x))) });
+  const enc = spawnSync(FFMPEG, ["-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "gray", "-s", `${W}x${H}`, "-r", "30", "-i", "-", "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv420p", video], { input: Buffer.concat(f.map((x) => Buffer.from(x))) });
   assert.equal(enc.status, 0, enc.stderr?.toString());
   const r = spawnSync(process.execPath, [cli, "motion", video, "--json", "--out", dir], { encoding: "utf8" });
   const report = JSON.parse(r.stdout);

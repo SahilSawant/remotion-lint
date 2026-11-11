@@ -21,12 +21,15 @@ export interface Issue extends Box {
   keys: string[];
 }
 
-/** One visible run of text: where it is, and where it can be seen once masks are applied. */
+/** One visible run of text: where it is, where it can be seen once masks are applied, and how opaque it is. */
 export interface TextRun {
-  /** Stable identity across frames: the n-th run with this exact text, as `"<n>:<text>"`. */
+  /** The element's identity, stable across frames for as long as React keeps the element. */
   key: string;
   full: Box;
   visible: Box;
+  opacity: number;
+  /** Every `clip-path` and `mask-image` on the element and its ancestors, with the shape an SVG `url(#id)` points at, so a wipe that changes only its mask still counts as motion. */
+  clip: string;
 }
 
 /** What one frame measured. */
@@ -48,7 +51,25 @@ type Rules = Config["layout"] & { W: number; H: number };
  */
 export const measure = ({ minFontPx, safeArea, W, H, overlap, forbidden }: Rules): FrameMeasure => {
   type R = { left: number; top: number; right: number; bottom: number };
-  type Run = { el: Element; key: string; text: string; px: number; caps: R[]; full: R; vis: R; cut: boolean; embedded: boolean; svg: boolean };
+  type Run = { el: Element; key: string; text: string; px: number; caps: R[]; full: R; vis: R; opacity: number; clip: string; cut: boolean; embedded: boolean; svg: boolean };
+  const clipsOf = (el: Element) => {
+    const out: string[] = [];
+    for (let e: Element | null = el; e && e !== document.body; e = e.parentElement) {
+      const cs = getComputedStyle(e);
+      for (const c of [cs.clipPath, cs.maskImage]) {
+        if (!c || c === "none") continue;
+        const ref = /url\(["']?#([^"')]+)["']?\)/.exec(c);
+        out.push(ref ? `${c}=${document.getElementById(ref[1])?.innerHTML ?? ""}` : c);
+      }
+    }
+    return out.join(" | ");
+  };
+  const w = window as unknown as { __remotionLintIds?: WeakMap<Element, number>; __remotionLintNext?: number };
+  const ids = (w.__remotionLintIds ??= new WeakMap());
+  const idOf = (el: Element) => {
+    if (!ids.has(el)) ids.set(el, (w.__remotionLintNext = (w.__remotionLintNext ?? 0) + 1));
+    return String(ids.get(el));
+  };
   const toBox = (r: R) => ({ x: r.left, y: r.top, w: r.right - r.left, h: r.bottom - r.top });
   const area = (r: R) => Math.max(0, r.right - r.left) * Math.max(0, r.bottom - r.top);
   const intersect = (a: R, b: R): R => ({ left: Math.max(a.left, b.left), top: Math.max(a.top, b.top), right: Math.min(a.right, b.right), bottom: Math.min(a.bottom, b.bottom) });
@@ -78,19 +99,21 @@ export const measure = ({ minFontPx, safeArea, W, H, overlap, forbidden }: Rules
     return list.includes("all") || list.includes(kind) || (host.parentElement ? ignored(host.parentElement, kind) : false);
   };
 
-  /** How much the element is scaled on screen, from its transforms rather than its bounding box. */
-  const scaleOf = (el: Element) => {
+  /** How much the element is scaled and rotated on screen, from its transforms rather than its bounding box. */
+  const transformOf = (el: Element) => {
     if (el instanceof SVGGraphicsElement) {
       const m = el.getScreenCTM();
-      return m ? Math.sqrt(Math.abs(m.a * m.d - m.b * m.c)) : 1;
+      return m ? { scale: Math.sqrt(Math.abs(m.a * m.d - m.b * m.c)), angle: Math.atan2(m.b, m.a) } : { scale: 1, angle: 0 };
     }
-    let s = 1;
+    let s = 1, angle = 0;
     for (let e: Element | null = el; e; e = e.parentElement) {
       const cs = getComputedStyle(e);
       if (cs.transform && cs.transform !== "none") {
         const m = new DOMMatrix(cs.transform);
         s *= Math.sqrt(Math.abs(m.a * m.d - m.b * m.c));
+        angle += Math.atan2(m.b, m.a);
       }
+      if (cs.rotate && cs.rotate !== "none") angle += (parseFloat(cs.rotate.split(" ").pop() ?? "0") * Math.PI) / 180;
       if (cs.scale && cs.scale !== "none") {
         const [sx, sy = sx] = cs.scale.split(" ").map(parseFloat);
         s *= Math.sqrt(Math.abs(sx * sy));
@@ -98,11 +121,14 @@ export const measure = ({ minFontPx, safeArea, W, H, overlap, forbidden }: Rules
       const z = parseFloat((cs as unknown as { zoom: string }).zoom);
       if (z && z !== 1) s *= z;
     }
-    return s;
+    return { scale: s, angle };
   };
 
-  /** Line boxes of the element's own text nodes (not its child elements), each shrunk to `ratio` em around its middle. */
-  const linesOf = (el: Element, px: number, ratio: number): R[] => {
+  /**
+   * Line boxes of the element's own text nodes (not its child elements), each shrunk to `ratio` em
+   * around its middle. Rotated text keeps its full boxes, because the shrink assumes horizontal lines.
+   */
+  const linesOf = (el: Element, px: number, ratio: number, rotated: boolean): R[] => {
     if (el instanceof SVGGraphicsElement) {
       const r = el.getBoundingClientRect();
       return r.width && r.height ? [r] : [];
@@ -114,6 +140,10 @@ export const measure = ({ minFontPx, safeArea, W, H, overlap, forbidden }: Rules
       range.selectNodeContents(n);
       for (const r of range.getClientRects()) {
         if (r.width < 1 || r.height < 1) continue;
+        if (rotated) {
+          out.push({ left: r.left, right: r.right, top: r.top, bottom: r.bottom });
+          continue;
+        }
         const h = Math.min(r.height, px * ratio);
         const mid = (r.top + r.bottom) / 2;
         out.push({ left: r.left, right: r.right, top: mid - h / 2, bottom: mid + h / 2 });
@@ -134,6 +164,14 @@ export const measure = ({ minFontPx, safeArea, W, H, overlap, forbidden }: Rules
     for (let e: Element | null = el; e && e !== document.body; e = e.parentElement) {
       const cs = getComputedStyle(e);
       const onChain = e === el || need === "any" || (need === "positioned" && (cs.position !== "static" || containsBlock(cs))) || (need === "transformed" && containsBlock(cs));
+      const inset = /^inset\(([^)]*)\)/.exec(cs.clipPath);
+      if (inset) {
+        const er = e.getBoundingClientRect();
+        const parts = inset[1].split(/\s+round\s+/)[0].trim().split(/\s+/);
+        const [t, r2 = t, b = t, l = r2] = parts;
+        const len = (v: string, size: number) => (v.endsWith("%") ? (parseFloat(v) / 100) * size : parseFloat(v) || 0);
+        vis = intersect(vis, { top: er.top + len(t, er.height), right: er.right - len(r2, er.width), bottom: er.bottom - len(b, er.height), left: er.left + len(l, er.width) });
+      }
       if (!onChain) continue;
       const cx = cs.overflowX !== "visible", cy = cs.overflowY !== "visible";
       if (cx || cy) {
@@ -157,9 +195,20 @@ export const measure = ({ minFontPx, safeArea, W, H, overlap, forbidden }: Rules
     return layers.some((l) => l.z > z && l.painted && l.o > 0.98 && l.r.left <= r.left + 1 && l.r.top <= r.top + 1 && l.r.right >= r.right - 1 && l.r.bottom >= r.bottom - 1);
   };
   const frame: R = { left: 0, top: 0, right: W, bottom: H };
+  /** True when an unrelated element painted on top of `el` covers all of `r` (the next scene of a transition, a full-frame card). */
+  const overlaid = (el: Element, r: R) => {
+    const stack = document.elementsFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+    for (const top of stack) {
+      if (top === el || el.contains(top) || top.contains(el)) return false;
+      const cs = getComputedStyle(top);
+      const tr = top.getBoundingClientRect();
+      const solid = paints(cs) || top instanceof HTMLImageElement || top instanceof HTMLVideoElement || top instanceof HTMLCanvasElement;
+      if (solid && opacityOf(top) > 0.98 && tr.left <= r.left + 1 && tr.top <= r.top + 1 && tr.right >= r.right - 1 && tr.bottom >= r.bottom - 1) return true;
+    }
+    return false;
+  };
 
   const runs: Run[] = [];
-  const seenText = new Map<string, number>();
   const seen = new Set<Element>();
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   while (walker.nextNode()) {
@@ -170,17 +219,17 @@ export const measure = ({ minFontPx, safeArea, W, H, overlap, forbidden }: Rules
     seen.add(el);
     if (hidden(el)) continue;
     const svg = el instanceof SVGElement;
-    const px = Math.round(parseFloat(getComputedStyle(el).fontSize) * scaleOf(el) * 10) / 10;
-    const lines = linesOf(el, px, 1);
+    const tf = transformOf(el);
+    const turned = Math.abs(Math.sin(tf.angle)) > 0.05;
+    const px = Math.round(parseFloat(getComputedStyle(el).fontSize) * tf.scale * 10) / 10;
+    const lines = linesOf(el, px, 1, turned);
     if (!lines.length) continue;
     const full = union(lines);
     const { vis, cut } = svg ? { vis: full, cut: false } : clipOf(el, full, Math.max(1, px * 0.08));
     const onScreen = intersect(vis, frame);
-    if (area(onScreen) < 1 || covered(el, onScreen)) continue;
+    if (area(onScreen) < 1 || covered(el, onScreen) || overlaid(el, onScreen)) continue;
     const text = norm(el.textContent ?? "");
-    const n = (seenText.get(text) ?? 0) + 1;
-    seenText.set(text, n);
-    runs.push({ el, key: `${n}:${text}`, text, px, caps: linesOf(el, px, 0.75), full, vis: onScreen, cut, embedded: !!el.closest('[data-lint="embedded"]'), svg });
+    runs.push({ el, key: idOf(el), text, px, caps: linesOf(el, px, 0.75, turned), full, vis: onScreen, opacity: Math.round(opacityOf(el) * 100) / 100, clip: clipsOf(el), cut, embedded: !!el.closest('[data-lint="embedded"]'), svg });
   }
 
   const issues: Issue[] = [];
@@ -270,13 +319,13 @@ export const measure = ({ minFontPx, safeArea, W, H, overlap, forbidden }: Rules
     };
     for (const e of document.body.querySelectorAll("*")) {
       if (!matches(e) || [...e.children].some(matches) || hidden(e)) continue;
-      const r = intersect(e.getBoundingClientRect(), frame);
+      const r = intersect(clipOf(e, e.getBoundingClientRect(), 0).vis, frame);
       if (area(r) < 1 || covered(e, r)) continue;
       add("forbidden-word", [e], [], textOf(e), r);
     }
   }
 
-  return { texts: runs.length, issues, runs: runs.map((t) => ({ key: t.key, full: toBox(t.full), visible: toBox(t.vis) })) };
+  return { texts: runs.length, issues, runs: runs.map((t) => ({ key: t.key, full: toBox(t.full), visible: toBox(t.vis), opacity: t.opacity, clip: t.clip })) };
 };
 
 const COLOUR: Record<IssueKind, string> = {
@@ -314,15 +363,16 @@ export async function screenshotWithMarks(page: Page, issues: Issue[], safeArea:
   await page.evaluate(() => document.querySelectorAll("[data-lint-mark]").forEach((n) => n.remove()));
 }
 
-/** Kinds that are expected mid-transition: a slide-in crosses the edge, a reveal is clipped, two titles cross. */
-export const TRANSIENT: IssueKind[] = ["clipped", "outside-safe-area", "overlap"];
-
 const sameBox = (p: Box, q: Box) => Math.abs(p.x - q.x) + Math.abs(p.y - q.y) + Math.abs(p.w - q.w) + Math.abs(p.h - q.h) <= 0.5;
 
-/** Whether every run in `keys` is in both frames and in the same place. A run missing from either frame is not still. */
-export function still(keys: string[], a: TextRun[], b: TextRun[]): boolean {
-  return keys.every((k) => {
-    const p = a.find((r) => r.key === k), q = b.find((r) => r.key === k);
-    return !!p && !!q && sameBox(p.full, q.full) && sameBox(p.visible, q.visible);
+/**
+ * Whether any run in `keys` is in a different place, size, opacity or mask in `other` than in `now`.
+ * A run missing from `other` is not counted as moving: text that appears or disappears at a cut
+ * is judged where it stands.
+ */
+export function moved(keys: string[], now: TextRun[], other: TextRun[]): boolean {
+  return keys.some((k) => {
+    const p = now.find((r) => r.key === k), q = other.find((r) => r.key === k);
+    return !!p && !!q && (!sameBox(p.full, q.full) || !sameBox(p.visible, q.visible) || Math.abs(p.opacity - q.opacity) > 0.01 || p.clip !== q.clip);
   });
 }

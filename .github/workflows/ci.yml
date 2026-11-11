@@ -6,12 +6,21 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+env:
+  REMOTION_LINT_REQUIRE_FFMPEG: "1"
 jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        node: [20, 22]
+        include:
+          - { node: 20, remotion: "" }
+          - { node: 22, remotion: "" }
+          - { node: 22, remotion: "4.0.53", react: "18.3.1" }
+          - { node: 22, remotion: "4.0.200", react: "18.3.1" }
+          - { node: 22, remotion: "4.0.350", react: "18.3.1" }
+    name: node ${{ matrix.node }}, remotion ${{ matrix.remotion || 'pinned' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -19,6 +28,8 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
+      - if: matrix.remotion != ''
+        run: npm install --no-save remotion@${{ matrix.remotion }} @remotion/bundler@${{ matrix.remotion }} @remotion/transitions@${{ matrix.remotion }} react@${{ matrix.react }} react-dom@${{ matrix.react }}
       - run: npx playwright install --with-deps chromium
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: npm test

@@ -7,7 +7,7 @@ export interface DiffResult {
   mismatchPct: number;
   width: number;
   height: number;
-  /** The three worst rows of a 12-row grid, as [row (1-based), percentage of that row's cells that differ]. */
+  /** The three worst of 12 horizontal bands, as [band (1-based, top first), percentage of that band's pixels that differ]. */
   hottestRows: Array<[number, number]>;
   /** A side-by-side PNG: screen, reference, diff. */
   sideBySide: Buffer;
@@ -32,17 +32,19 @@ export async function diffFrame(page: Page, threshold: number): Promise<DiffResu
       const e = document.querySelector(`[data-lint="${k}"]`);
       if (!e) return null;
       const r = e.getBoundingClientRect();
-      return { x: Math.max(0, Math.round(r.left)), y: Math.max(0, Math.round(r.top)), w: Math.round(r.width), h: Math.round(r.height) };
+      return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) };
     }),
   );
   const [s, r] = boxes;
   if (!s || !r) return null;
   const shot = PNG.sync.read(await page.screenshot());
-  const w = Math.min(s.w, r.w, shot.width - s.x, shot.width - r.x);
-  const h = Math.min(s.h, r.h, shot.height - s.y, shot.height - r.y);
+  // Compare the same local area of both boxes: the part that is on screen for both.
+  const x0 = Math.max(0, -s.x, -r.x), y0 = Math.max(0, -s.y, -r.y);
+  const x1 = Math.min(s.w, r.w, shot.width - s.x, shot.width - r.x), y1 = Math.min(s.h, r.h, shot.height - s.y, shot.height - r.y);
+  const w = x1 - x0, h = y1 - y0;
   if (w < 1 || h < 1) return null;
-  const a = crop(shot, s.x, s.y, w, h);
-  const b = crop(shot, r.x, r.y, w, h);
+  const a = crop(shot, s.x + x0, s.y + y0, w, h);
+  const b = crop(shot, r.x + x0, r.y + y0, w, h);
   const diff = new PNG({ width: w, height: h });
   const bad = pixelmatch(a.data, b.data, diff.data, w, h, { threshold, includeAA: false, alpha: 0.25 });
 

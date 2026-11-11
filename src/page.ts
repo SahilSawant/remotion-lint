@@ -37,6 +37,38 @@ const TYPES: Record<string, string> = {
   ".webm": "video/webm", ".mov": "video/quicktime",
 };
 
+/**
+ * The globals Remotion's own renderer sets before a page loads (see `setPropsAndEnv` in
+ * `@remotion/renderer`), so the composition runs on its render path, with input props available
+ * to `calculateMetadata`. Runs in the page; must stay self-contained.
+ */
+function renderEnvironment(inputProps: string) {
+  const w = window as any;
+  w.remotion_puppeteerTimeout = 60_000;
+  w.remotion_isMainTab = true;
+  w.remotion_mediaCacheSizeInBytes = null;
+  w.remotion_initialMemoryAvailable = null;
+  w.remotion_sampleRate = 48_000;
+  w.process = w.process ?? {};
+  w.process.env = w.process.env ?? {};
+  w.process.env.NODE_ENV = "production";
+  w.remotion_broadcastChannel = new BroadcastChannel("remotion-video-frame-extraction");
+  w.remotion_envVariables = "{}";
+  w.remotion_inputProps = inputProps;
+  w.remotion_initialFrame = 0;
+  w.remotion_attempt = 1;
+  w.remotion_proxyPort = 0;
+  w.remotion_audioEnabled = false;
+  w.remotion_videoEnabled = true;
+  w.remotion_logLevel = "error";
+  const blocked = (what: string) => () => {
+    w.remotion_cancelledError = new Error(`${what}() was called; it cannot run in a headless browser`).stack;
+    return false;
+  };
+  w.alert = blocked("alert");
+  w.confirm = blocked("confirm");
+}
+
 /** Serves `dir` on a random local port, with Range support so media elements can seek. */
 function serve(dir: string): Promise<http.Server> {
   const root = path.resolve(dir) + path.sep;
@@ -97,6 +129,7 @@ export async function openComposition({ entryPoint, id, channel, props, webpackO
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     browser = await chromium.launch(channel ? { channel } : {});
     const page = await browser.newPage({ deviceScaleFactor: 1 });
+    await page.addInitScript(renderEnvironment, JSON.stringify(props ?? {}));
     const errors: string[] = [];
     const warnings: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
@@ -107,15 +140,16 @@ export async function openComposition({ entryPoint, id, channel, props, webpackO
     });
     await page.goto(`${base}/index.html`);
     await page.waitForFunction(() => typeof (window as any).remotion_setBundleMode === "function");
+    await page.evaluate(() => (window as any).remotion_setBundleMode({ type: "evaluation" }));
+    await page.waitForFunction(() => (window as any).remotion_renderReady === true || !!(window as any).remotion_cancelledError, null, { timeout: 60_000 });
     const meta = await page.evaluate(async (compId) => {
-      const comps = await (window as any).getStaticCompositions();
-      const c = comps.find((x: any) => x.id === compId);
-      return c
-        ? { found: true as const, fps: c.fps as number, durationInFrames: c.durationInFrames as number, width: c.width as number, height: c.height as number, props: c.serializedResolvedPropsWithCustomSchema as string }
-        : { found: false as const, ids: comps.map((x: any) => x.id) as string[] };
+      const w = window as any;
+      const ids: string[] = typeof w.remotion_getCompositionNames === "function" ? w.remotion_getCompositionNames() : (await w.getStaticCompositions()).map((x: any) => x.id);
+      if (!ids.includes(compId)) return { found: false as const, ids };
+      const c = typeof w.remotion_calculateComposition === "function" ? await w.remotion_calculateComposition(compId) : (await w.getStaticCompositions()).find((x: any) => x.id === compId);
+      return { found: true as const, fps: c.fps as number, durationInFrames: c.durationInFrames as number, width: c.width as number, height: c.height as number, props: c.serializedResolvedPropsWithCustomSchema as string };
     }, id);
     if (!meta.found) throw new Error(`no composition "${id}"; found: ${meta.ids.join(", ") || "none"}`);
-    const serialized = props && Object.keys(props).length ? JSON.stringify({ ...JSON.parse(meta.props), ...props }) : meta.props;
     await page.setViewportSize({ width: meta.width, height: meta.height });
     await page.evaluate(([compId, m, p]) => {
       (window as any).remotion_setBundleMode({
@@ -124,8 +158,9 @@ export async function openComposition({ entryPoint, id, channel, props, webpackO
         compositionDefaultCodec: "h264", compositionDefaultOutName: compId, compositionDefaultVideoImageFormat: "png",
         compositionDefaultPixelFormat: "yuv420p", compositionDefaultProResProfile: null, compositionDefaultSampleRate: 48000,
       });
-    }, [id, meta, serialized] as const);
+    }, [id, meta, meta.props] as const);
 
+    let mounted = false;
     const ready = async (frame: number) => {
       try {
         await page.waitForFunction(() => (window as any).remotion_renderReady === true || !!(window as any).remotion_cancelledError, null, { timeout: 60_000 });
@@ -143,10 +178,17 @@ export async function openComposition({ entryPoint, id, channel, props, webpackO
       async seek(frame) {
         await ready(frame);
         fail(frame);
-        await page.evaluate(([f, compId]) => (window as any).remotion_setFrame(f, compId, 0), [frame, id] as const);
+        await page.evaluate(([f, compId]) => (window as any).remotion_setFrame(f, compId, 1), [frame, id] as const);
         await ready(frame);
         await page.evaluate(() => document.fonts.ready);
         fail(frame);
+        if (!mounted) {
+          mounted = await page.evaluate(() => !!document.querySelector("#remotion-canvas")?.firstElementChild);
+          if (!mounted) {
+            const version = await page.evaluate(() => String((window as any).remotion_version ?? "unknown"));
+            throw new Error(`${id} did not mount at frame ${frame}; Remotion ${version} may not be supported (please open an issue)`);
+          }
+        }
       },
       close: cleanup,
     };

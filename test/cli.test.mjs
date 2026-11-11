@@ -22,6 +22,16 @@ function run(...args) {
 }
 
 const kinds = (report) => report.frames.map((f) => f.issues.map((i) => i.kind));
+const movingKinds = (report) => report.frames.map((f) => f.moving.map((i) => i.kind));
+/** Checks each frame against "clean", a failing kind, or "moving:<kind>" (shown, not counted). */
+function expectFrames(report, expected) {
+  expected.forEach((e, i) => {
+    const [got, mov] = [kinds(report)[i], movingKinds(report)[i]];
+    if (e === "clean") assert.deepEqual([got, mov], [[], []], `frame ${i}: expected clean`);
+    else if (e.startsWith("moving:")) assert.deepEqual([got, mov], [[], [e.slice(7)]], `frame ${i}: expected ${e}`);
+    else assert.deepEqual(got, [e], `frame ${i}: expected ${e}`);
+  });
+}
 
 const PLANTED = ["clean", "clipped", "too-small", "outside-safe-area", "overlap", "forbidden-word", "escapes-box", "under-control"];
 
@@ -34,18 +44,39 @@ test("every planted bug is caught, alone, on its own second", () => {
 test("ordinary motion design passes, including mid-transition frames", () => {
   const secs = ["0.2", "0.9", "1.2", "1.9", ...Array.from({ length: 10 }, (_, i) => String(i + 2.5))];
   const { code, report } = run("layout", "Ordinary", ...secs);
-  assert.deepEqual(kinds(report), report.frames.map(() => []));
-  assert.ok(report.frames[0].skippedWhileMoving.length > 0, "the mid-reveal frame should report what it skipped");
-  assert.ok(report.frames[2].skippedWhileMoving.length > 0, "the mid-slide frame should report what it skipped");
+  expectFrames(report, ["moving:clipped", "clean", "moving:outside-safe-area", "clean", ...secs.slice(4).map(() => "clean")]);
   assert.equal(code, 0);
 });
 
 test("problems hidden in SVG, rotation, long text, split letters, clips, inputs, slow motion, twins and layers are caught", () => {
   const expected = ["too-small", "too-small", "forbidden-word", "forbidden-word", "clipped", "clipped", "forbidden-word", "clean",
-    "clipped", "clipped", "outside-safe-area", "clipped", "outside-safe-area"];
+    "clipped", "clipped", "moving:outside-safe-area", "clipped", "outside-safe-area"];
   const { code, report } = run("layout", "Missed", ...expected.map((_, i) => String(i + 0.5)));
-  expected.forEach((kind, i) => assert.deepEqual(kinds(report)[i], kind === "clean" ? [] : [kind], `second ${i}: expected ${kind}`));
+  expectFrames(report, expected);
   assert.equal(code, 1);
+});
+
+test("text that is moving or changing is shown, not counted", () => {
+  const { code, report } = run("layout", "Moving", "0.1", "1.1");
+  expectFrames(report, ["moving:too-small", "moving:escapes-box"]);
+  assert.equal(code, 0);
+});
+
+test("problems that stay put fail, even in one-second scenes, rotated, or on a counter whose digits change", () => {
+  const { code, report } = run("layout", "Static", "0.5", "0.95", "1.5", "2.5", "3.5", "4.5");
+  expectFrames(report, ["clipped", "clipped", "clipped", "outside-safe-area", "clean", "clipped"]);
+  assert.equal(code, 1);
+});
+
+test("Remotion's fade and wipe transitions are motion, and each scene alone is clean", () => {
+  const { code, report } = run("layout", "Transitions", "0.5", "1.5", "2.5", "3.5");
+  expectFrames(report, ["clean", "moving:overlap", "moving:overlap", "clean"]);
+  assert.equal(code, 0);
+});
+
+test("--props reach calculateMetadata", () => {
+  assert.equal(raw("layout", "Meta", "2.5").status, 2);
+  assert.equal(run("layout", "Meta", "2.5", "--props", '{"n":3}').code, 0);
 });
 
 test("a clean composition passes, and small text inside an embedded screen is allowed", () => {
@@ -64,13 +95,15 @@ test("default props reach the composition, and --props overrides them", () => {
 test("a composition that throws is an error, never a pass", () => {
   const r = raw("layout", "Crash", "0.5");
   assert.equal(r.status, 2);
-  assert.match(r.stderr, /Crash errored at frame 15: Error: this composition always fails/);
+  assert.match(r.stderr, /Crash errored at frame 15: (Error: )?this composition always fails/);
 });
 
 test("an error the page logs while rendering fine is a warning, not a failure", () => {
   const r = raw("layout", "Noisy", "0.5");
   assert.equal(r.status, 0);
   assert.match(r.stdout, /warning: the page logged "Error: analytics beacon blocked"/);
+  const { report } = run("layout", "Noisy", "0.5");
+  assert.deepEqual(report.warnings, [{ sec: 0.5, message: "Error: analytics beacon blocked" }]);
 });
 
 test("a failing frame leaves a marked screenshot behind", () => {
@@ -87,6 +120,12 @@ test("diff passes a matching component and fails a drifted one", () => {
   assert.equal(code, 1);
 });
 
+test("diff fails when the two boxes are different sizes", () => {
+  const { code, report } = run("diff", "DiffSize", "0.5");
+  assert.deepEqual(report.frames[0].sizeMismatch, { screen: "300x600", ref: "300x200" });
+  assert.equal(code, 1);
+});
+
 test("diff with nothing to compare fails", () => {
   const r = raw("diff", "Clean", "0.5");
   assert.equal(r.status, 1);
@@ -97,6 +136,7 @@ test("bad input is a one-line error with exit 2, never a stack trace", () => {
   const cases = [
     [["layout", "Nope", "0.5"], /no composition "Nope"; found: Planted/],
     [["layout", "Clean", "9"], /9s is outside Clean/],
+    [["layout", "Clean", "1.5s"], /"1.5s" is not a number of seconds/],
     [["layout", "Clean", "--every", "abc"], /--every must be a positive number/],
     [["layout", "Clean", "0.5", "--every", "1"], /either seconds or --every/],
     [["layout", "Clean", "0.5", "--bogus"], /Unknown option '--bogus'/],
@@ -128,6 +168,27 @@ test("a config with an unknown key or a bad pattern is refused", () => {
   r = raw("layout", "Clean", "0.5", "--config", write({ layout: { overlap: -5 } }));
   assert.equal(r.status, 2);
   assert.match(r.stderr, /"layout.overlap" must be between 0 and 1, got -5/);
+});
+
+test("Ctrl-C mid-run exits 130 and leaves no bundle behind", async () => {
+  const { spawn } = await import("node:child_process");
+  const ours = () => fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith("remotion-lint-bundle-"));
+  const before = ours();
+  const child = spawn(process.execPath, [cli, "layout", "Planted", "--every", "0.05", "--out", fs.mkdtempSync(path.join(os.tmpdir(), "remotion-lint-"))], { cwd: example });
+  let out = "";
+  child.stdout.on("data", (b) => (out += b));
+  await new Promise((resolve) => {
+    const t = setInterval(() => {
+      if (out.includes("text runs")) {
+        clearInterval(t);
+        child.kill("SIGINT");
+        resolve();
+      }
+    }, 50);
+  });
+  const code = await new Promise((resolve) => child.on("exit", (c) => resolve(c)));
+  assert.equal(code, 130);
+  assert.deepEqual(ours().filter((n) => !before.includes(n)), []);
 });
 
 test("no bundle is left behind, after a normal run or a build that fails", () => {

@@ -29,8 +29,8 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test test/*.test.mjs",
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
+    "test": "npm run build && node --test",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepublishOnly": "npm test"
   },
@@ -43,8 +43,8 @@
     "visual-regression"
   ],
   "peerDependencies": {
-    "@remotion/bundler": ">=4.0.0 <5",
-    "remotion": ">=4.0.0 <5"
+    "@remotion/bundler": ">=4.0.53 <5",
+    "remotion": ">=4.0.53 <5"
   },
   "dependencies": {
     "pixelmatch": "^7.1.0",
@@ -53,6 +53,7 @@
   },
   "devDependencies": {
     "@remotion/bundler": "4.0.529",
+    "@remotion/transitions": "^4.0.529",
     "@types/node": "^22.10.0",
     "@types/pngjs": "^6.0.5",
     "@types/react": "^19.1.0",
