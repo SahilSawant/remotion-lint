@@ -66,7 +66,7 @@ npx remotion-lint layout <composition> --every 0.5  # sweep the whole compositio
 | `clipped` | text runs past the edge of any ancestor that hides overflow (or has `contain: paint`), past a `clip-path` shape, or off the edge of the frame |
 | `too-small` | the rendered font size, after every transform and scale, is under `minFontPx` (default 28) |
 | `outside-safe-area` | text comes closer to an edge than `safeArea` (default `"5%"`: title-safe, 5% of the width left and right and 5% of the height top and bottom, landscape or portrait) |
-| `overlap` | a line of one text run shares more than `overlap` of the smaller line's cap-height box with a line of another (default 15%), however faint or transparent the text is. Copies of the same text offset by up to 0.15 em (outline, drop shadow, retro offset) are not an overlap. Text positioned on top of its parent's text is compared with it |
+| `overlap` | a line of one text run shares more than `overlap` of the smaller line's cap-height box with a line of another (default 15%), however faint or transparent the text is. Copies of the same text offset by up to 0.15 em (outline, drop shadow, retro offset, a glitch title's colour copies) are not an overlap. Other text positioned on top of its parent's text is compared with it |
 | `forbidden-word` | any element's text, or an input's value, matches a pattern in `forbidden`. Letters split across spans that sit side by side are joined, letters spaced out one by one ("N i g h t") are read as the word, and the spaces between word spans are kept, so "What to" + "do next" never reads "todo" |
 | `escapes-box` | text sits outside the nearest ancestor that draws a background or border |
 | `under-control` | a small solid shape such as a button or badge is drawn on top of the text (a translucent or blended highlight is not) |
@@ -77,8 +77,9 @@ also be px on a 1080p frame, one number or `[left/right, top/bottom]`, scaled th
 
 Lines are measured one by one from the element's own text, so a decorative child (an accent bar, an icon) is not
 counted as text. Clipping uses the font's em box and overlap uses roughly its cap height, rather than ascent and
-descent, so tight leading down to about 0.7 is not an overlap; an all-caps line is tested for clipping by its
-capitals, so a tight per-line mask around it is not a clip. Text with opacity under 0.5, hidden text, text fully
+descent, so tight leading down to about 0.7 is not an overlap. An all-caps line (or one set in capitals with
+`text-transform`) is tested for clipping by the middle 0.8 em where capitals sit, so a per-line mask down to
+`line-height: 0.8` is not a clip, and a tighter one that cuts into the letters is. Text with opacity under 0.5, hidden text, text fully
 outside its `clip-path` shape, and text under a layer nothing can show through are ignored. Only a plain, solid,
 fully opaque colour with no mask, filter, clip-path or blend mode counts as such a layer: a vignette, tint, scrim,
 gradient, image or video never hides the text under it. Forbidden words are searched down to 5% opacity, so a faint
@@ -88,14 +89,15 @@ escapes an `overflow: hidden` parent that is not its containing block.
 **Things in motion.** A title sliding in crosses the edge, a reveal is clipped by its mask, and two titles cross
 during a fade or wipe; that is the design, not a bug. So when a problem involves text that is moving (its position,
 size, visible area, opacity or mask, including the SVG shape a `url(#id)` clip points at, differs on the frame
-before or after), remotion-lint follows that text frame by frame, forward and then backward, up to two seconds each
-way, until it comes to rest, and judges it there. If it rests without the problem, the problem is printed as
-`moving, not counted`, listed under `moving` in the report, and does not fail the run. It counts if the problem is
-still there at rest, or if the text never rests within reach: a caption that stays too small through a slow
-push-in, a title parked at the edge while the camera drifts, a word still animating when its scene cuts away, a
-marquee always cut by its box. Text is followed by where it sits in the page and what it says, so the verdict is the
-same whichever seconds you check. Text whose words change (a typewriter, a counter) is judged frame by frame as if
-it stood still.
+before or after), remotion-lint follows that text frame by frame for up to a second. As soon as the same text is on
+screen without the problem (a slide-in that lands clear, a credit line fully in frame, a lower third settled into a
+drifting shot) the problem is passing: it is printed as `moving, not counted`, listed under `moving` in the report,
+and does not fail the run. Text on its way out is also followed backward, to where it was before it left. The
+problem counts if the text comes to rest still showing it, or shows it for as long as it can be followed: a caption
+too small through a whole push-in, a title that drifts into the margin and stays there, a word still animating when
+its scene cuts away, a marquee always cut by its box. Text is followed by what it says (numbers aside, so a counter
+counting up while it slides in is still the same text) and its font size, so the verdict is the same whichever
+seconds you check. Text whose words change, like a typewriter, is judged frame by frame as if it stood still.
 
 **Not covered:** text drawn on a `<canvas>`, in a video or image, or by CSS `::before`/`::after`. SVG `<text>` is
 checked for size, safe area, running off the frame and forbidden words, not for clipping by its own boxes. Text
@@ -118,9 +120,11 @@ npx remotion-lint diff <composition> 0.5 3
 ```
 
 Each frame reports the share of pixels that differ and the worst rows, writes a side-by-side image (screen,
-reference, diff), and fails over `maxMismatchPct` (default 1%; a pixel counts as different past `threshold`, default 0.12), when the two
-boxes are different sizes, or when part of either box is off screen and so was not compared. At 1%, a changed number
-or word on a card fails; raise it if your reference is a screenshot with different font smoothing. A run
+reference, diff), and fails over `maxMismatchPct` of the whole box (default 1%; a pixel counts as different past `threshold`, default
+0.12), over `maxBandPct` of any one of the 12 bands (default 2%), when the two boxes are different sizes, or when part
+of either box is off screen and so was not compared. The band rule is what catches a changed number or word, which
+is a small share of the whole card but a large share of its row. Raise both if your reference is a screenshot with
+different font smoothing. A run
 where no frame has the pair fails too, so a typo in the attribute cannot pass silently, and each skipped frame says
 why (one of the two is missing, or a box is empty or off screen). The two boxes must not overlap: laid one over the
 other, as an onion skin, both would capture the same blended pixels, so remotion-lint refuses (exit 2).
@@ -134,7 +138,7 @@ npx remotion-lint motion out.mp4 --cuts 4.5,9,12.25   # the cuts you meant to ma
 
 Every hard cut is a jump until it is listed, with `--cuts` or `motion.cuts` in the config. When a run reports jumps
 and no cuts were given, it prints the `--cuts` line that would plan them all, so you can check that list against your
-edit. A one-frame flash on a listed cut is not a pop either, and `motion.allow: [[from, to]]` excuses jumps and pops
+edit. A one-frame flash on the cut frame itself is not a pop either (a stray or black frame just after it still is), and `motion.allow: [[from, to]]` excuses jumps and pops
 inside a stretch you meant (a glitch effect, a strobe).
 
 | Finding | Meaning |
@@ -173,7 +177,7 @@ export default {
   webpackOverride: (c) => enableTailwind(c), // the same override as in remotion.config.ts
   props: { title: "Launch" }, // merged over the composition's default props; --props on the command line wins
   layout: { minFontPx: 28, safeArea: "5%", overlap: 0.15, forbidden: ["\\blorem\\b", "TODO"] },
-  diff: { threshold: 0.12, maxMismatchPct: 1 },
+  diff: { threshold: 0.12, maxMismatchPct: 1, maxBandPct: 2 },
   motion: { cuts: [11.5, 20.4], allow: [[30, 31.5]], frozenSeconds: 2, failOnFrozen: false },
   browserChannel: "", // "chrome" to use your installed Chrome
 };

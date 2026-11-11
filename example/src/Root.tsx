@@ -57,10 +57,10 @@ const Clean: React.FC = () => (
   </AbsoluteFill>
 );
 
-const Card: React.FC<{ variant: "a" | "b" }> = ({ variant }) => (
+const Card: React.FC<{ variant: "a" | "b"; value?: string }> = ({ variant, value = "1,240" }) => (
   <div style={{ width: 400, height: 300, background: variant === "a" ? "#f4f4f4" : "#1d1d1f", position: "relative" }}>
     <div style={{ ...font, position: "absolute", left: 24, top: 24, fontSize: 36, color: variant === "a" ? "#111" : "#fff" }}>Score</div>
-    <div style={{ ...font, position: "absolute", left: 24, top: 120, fontSize: 96, color: variant === "a" ? "#111" : "#fff" }}>1,240</div>
+    <div style={{ ...font, position: "absolute", left: 24, top: 120, fontSize: 96, color: variant === "a" ? "#111" : "#fff" }}>{value}</div>
   </div>
 );
 
@@ -188,6 +188,19 @@ export const ORDINARY: Array<[number, string, React.ReactNode]> = [
   [15, "subtitles 70 px above the bottom edge", <div style={{ ...font, position: "absolute", left: 400, bottom: 70 }}>Subtitles sit low on the frame</div>],
   [16, "a mask reveal that takes most of a second", <Reveal frames={24} />],
   [17, "word-by-word spring caption, with real spaces between the word spans", <WordCaption />],
+  [18, "a glitch title: offset copies as absolutely positioned children", (
+    <div style={{ ...font, ...at(300, 300), fontSize: 120, fontWeight: 900 }}>
+      GLITCH
+      <span style={{ position: "absolute", left: 5, top: 0, color: "#f0f", mixBlendMode: "multiply" }}>GLITCH</span>
+      <span style={{ position: "absolute", left: -5, top: 0, color: "#0cf", mixBlendMode: "multiply" }}>GLITCH</span>
+    </div>
+  )],
+  [19, "capitals by text-transform in tight per-line masks", (
+    <div style={{ ...at(200, 300), fontFamily: "Helvetica, Arial, sans-serif", fontWeight: 900, fontSize: 140, lineHeight: 0.8, textTransform: "uppercase" }}>
+      <div style={{ overflow: "hidden" }}>Build</div>
+      <div style={{ overflow: "hidden" }}>Faster</div>
+    </div>
+  )],
 ];
 
 const caption = <div style={{ ...font, ...at(200, 500), fontSize: 14 }}>Fine print nobody can read</div>;
@@ -349,6 +362,55 @@ const ZoomChunk: React.FC = () => (
   </>
 );
 
+/** A small static hint, and from mid-scene the same words as a big title sliding in earlier in the page. */
+const DupKey: React.FC = () => {
+  const f = useCurrentFrame();
+  return (
+    <>
+      {f >= 15 ? <div style={{ ...font, ...at(interpolate(f, [15, 30], [-400, 300]), 300) }}>Swipe up</div> : null}
+      <div style={{ ...font, ...at(200, 700), fontSize: 14 }}>Swipe up</div>
+    </>
+  );
+};
+
+const Credits: React.FC = () => {
+  const y = interpolate(useCurrentFrame(), [0, 89], [1080, -700]);
+  return (
+    <div style={{ ...at(700, 0), transform: `translateY(${y}px)` }}>
+      {["Directed by Ada Park", "Written by Sam Lee", "Music by Ivo Ruiz", "Edited by Kim Dahl", "Sound by Lu Chen", "Colour by Max Ott", "Titles by Ana Bel", "Thanks for watching"].map((t) => (
+        <div key={t} style={{ ...font, height: 80 }}>{t}</div>
+      ))}
+    </div>
+  );
+};
+
+const KenBurns: React.FC = () => {
+  const f = useCurrentFrame();
+  return (
+    <AbsoluteFill style={{ transform: `scale(${1 + f * 0.0007})` }}>
+      <div style={{ ...font, ...at(interpolate(f, [30, 45], [-600, 300], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }), 860) }}>Lisbon, 6:12 am</div>
+    </AbsoluteFill>
+  );
+};
+
+const StatCard: React.FC = () => {
+  const f = useCurrentFrame();
+  const x = interpolate(f, [0, 15], [1920, 1300], { extrapolateRight: "clamp" });
+  return (
+    <div style={{ ...at(x, 300), width: 500, height: 260, background: "#eef2f7" }}>
+      <div style={{ ...font, fontSize: 36, position: "absolute", left: 24, top: 24 }}>Revenue</div>
+      <div style={{ ...font, fontSize: 96, position: "absolute", left: 24, top: 100 }}>{Math.round(interpolate(f, [0, 30], [0, 1240], { extrapolateRight: "clamp" })).toLocaleString("en-US")}</div>
+    </div>
+  );
+};
+
+/** Text that moves with the camera or never stops, but is only in trouble while it enters or leaves: passes. */
+export const DRIFT: Array<[number, string, React.ReactNode]> = [
+  [0, "end credits scrolling at a steady speed", <Credits />],
+  [1, "a lower third sliding into a slow push-in", <KenBurns />],
+  [2, "a stat card sliding in while its number counts up", <StatCard />],
+];
+
 const pair = (style: React.CSSProperties) => (
   <>
     <div style={{ ...font, ...at(400, 400), ...style }}>First line</div>
@@ -392,6 +454,17 @@ export const CAUTIOUS: Array<[number, string, React.ReactNode]> = [
   )],
   [13, "clipped", <div style={{ ...at(200, 200), width: 300, height: 80, contain: "paint" }}><div style={{ ...font, whiteSpace: "nowrap" }}>Cut by a paint containment box</div></div>],
   [14, "too-small", <div style={{ visibility: "hidden" }}><div style={{ ...font, ...at(200, 300), fontSize: 14, visibility: "visible" }}>Visible inside a hidden parent</div></div>],
+  [15, "forbidden-word", (
+    <div style={{ ...font, ...at(200, 200), display: "flex", gap: "0.2em" }}>
+      {"Project\u00a0Nightjar\u00a0launches".split("").map((c, i) => <span key={i}>{c}</span>)}
+    </div>
+  )],
+  [16, "clipped", (
+    <div style={{ ...at(200, 300), fontFamily: "Helvetica, Arial, sans-serif", fontWeight: 900, fontSize: 140, lineHeight: 0.65 }}>
+      <div style={{ overflow: "hidden" }}>BUILD</div>
+    </div>
+  )],
+  [17, "too-small", <DupKey />],
 ];
 
 /** Problems that stay put. Each must fail even inside short scenes. */
@@ -431,6 +504,13 @@ export const Root: React.FC = () => (
     )} durationInFrames={30} fps={30} width={1920} height={1080} />
     <Composition id="Overlays" component={() => <Strip items={OVERLAYS} />} durationInFrames={OVERLAYS.length * 30} fps={30} width={1920} height={1080} />
     <Composition id="Cautious" component={() => <Strip items={CAUTIOUS} />} durationInFrames={CAUTIOUS.length * 30} fps={30} width={1920} height={1080} />
+    <Composition id="Drift" component={() => <Strip items={DRIFT} seconds={3} />} durationInFrames={DRIFT.length * 90} fps={30} width={1920} height={1080} />
+    <Composition id="DiffNumber" component={() => (
+      <AbsoluteFill style={{ background: "#fff", flexDirection: "row", alignItems: "flex-start", gap: 100, padding: 200 }}>
+        <div data-lint="screen"><Card variant="a" value="1,246" /></div>
+        <div data-lint="ref"><Card variant="a" /></div>
+      </AbsoluteFill>
+    )} durationInFrames={30} fps={30} width={1920} height={1080} />
     <Composition id="DiffPartial" component={() => (
       <AbsoluteFill style={{ background: "#fff" }}>
         <div data-lint="screen" style={{ ...at(200, 200), width: 600, height: 300, background: "#f4f4f4" }}><div style={{ ...at(420, 0), width: 180, height: 300, background: "#e33" }} /></div>

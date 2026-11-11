@@ -57,7 +57,7 @@ export const measure = ({ minFontPx, safeX, safeY, W, H, overlap, forbidden }: R
   document.head.appendChild(probe);
   try {
     type R = { left: number; top: number; right: number; bottom: number };
-    type Run = { el: Element; key: string; text: string; px: number; caps: R[]; full: R; vis: R; opacity: number; clip: string; cut: boolean; offFrame: boolean; embedded: boolean; svg: boolean };
+    type Run = { el: Element; key: string; text: string; own: string; px: number; caps: R[]; full: R; vis: R; opacity: number; clip: string; cut: boolean; offFrame: boolean; embedded: boolean; svg: boolean };
     const clipsOf = (el: Element) => {
       const out: string[] = [];
       for (let e: Element | null = el; e && e !== document.body; e = e.parentElement) {
@@ -72,14 +72,16 @@ export const measure = ({ minFontPx, safeX, safeY, W, H, overlap, forbidden }: R
     };
     /**
      * A name for a run that survives React remounting or re-wrapping it (seeking out of its <Sequence> and back, a
-     * transition adding wrappers): its text, numbered in document order when the same text appears more than once.
-     * Text whose words change gets a new name each time, so a typewriter or a counter is judged as if it stood still.
+     * transition adding wrappers): its text with numbers blanked, so a counter keeps its name while it counts, and its
+     * CSS font size, numbered in document order when both repeat. A typewriter, whose words change, gets a new name
+     * each frame and is judged as if it stood still.
      */
     const keyCount = new Map<string, number>();
-    const keyOf = (text: string) => {
-      const n = (keyCount.get(text) ?? 0) + 1;
-      keyCount.set(text, n);
-      return `${text}#${n}`;
+    const keyOf = (text: string, el: Element) => {
+      const base = `${text.replace(/\d[\d.,:]*/g, "#")}|${getComputedStyle(el).fontSize}`;
+      const n = (keyCount.get(base) ?? 0) + 1;
+      keyCount.set(base, n);
+      return `${base}#${n}`;
     };
     const toBox = (r: R) => ({ x: r.left, y: r.top, w: r.right - r.left, h: r.bottom - r.top });
     const area = (r: R) => Math.max(0, r.right - r.left) * Math.max(0, r.bottom - r.top);
@@ -295,13 +297,15 @@ export const measure = ({ minFontPx, safeX, safeY, W, H, overlap, forbidden }: R
       const full = union(lines);
       const tol = Math.max(1, px * 0.08);
       const text = norm(el.textContent ?? "");
-      // Capitals and figures sit well inside the em box, so a tight mask around an all-caps line cuts nothing.
-      const clipBox = /\p{Ll}/u.test(text) ? full : union(linesOf(el, px, 0.8, turned));
-      const clip = svg ? { vis: full, cut: false } : clipOf(el, clipBox, tol);
+      // Capitals and figures sit inside the middle 0.8 em of the em box, so an all-caps line is tested by that band,
+      // with only a pixel of tolerance: a tight mask around it cuts nothing until it cuts into the letters.
+      const caps = getComputedStyle(el).textTransform === "uppercase" || !/\p{Ll}/u.test(text);
+      const clip = svg ? { vis: full, cut: false } : caps ? clipOf(el, union(linesOf(el, px, 0.8, turned)), 1) : clipOf(el, full, tol);
       const offFrame = full.left < -tol || full.top < -tol || full.right > W + tol || full.bottom > H + tol;
       const onScreen = intersect(clip.vis, frame);
       if (area(onScreen) < 1 || covered(el, onScreen) || overlaid(el, onScreen)) continue;
-      runs.push({ el, key: keyOf(text), text, px, caps: linesOf(el, px, 0.75, turned), full, vis: onScreen, opacity: Math.round(opacityOf(el) * 100) / 100, clip: clipsOf(el), cut: clip.cut || offFrame, offFrame, embedded: !!el.closest('[data-lint="embedded"]'), svg });
+      const own = norm([...el.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE).map((n) => n.textContent).join(""));
+      runs.push({ el, key: keyOf(text, el), text, own, px, caps: linesOf(el, px, 0.75, turned), full, vis: onScreen, opacity: Math.round(opacityOf(el) * 100) / 100, clip: clipsOf(el), cut: clip.cut || offFrame, offFrame, embedded: !!el.closest('[data-lint="embedded"]'), svg });
     }
 
     const issues: Issue[] = [];
@@ -360,7 +364,7 @@ export const measure = ({ minFontPx, safeX, safeY, W, H, overlap, forbidden }: R
       for (let j = i + 1; j < film.length; j++) {
         const a = film[i], b = film[j];
         if ((a.el.contains(b.el) && inFlow(a.el, b.el)) || (b.el.contains(a.el) && inFlow(b.el, a.el))) continue;
-        if (a.text === b.text && near(a.full, b.full, Math.max(a.px, b.px))) continue;
+        if (a.own === b.own && near(a.full, b.full, Math.max(a.px, b.px))) continue;
         const hit = a.caps.some((la) => b.caps.some((lb) => area(intersect(la, lb)) > overlap * Math.min(area(la), area(lb))));
         if (hit) add("overlap", [a.el, b.el], [a.key, b.key], `${short(a.text)} <> ${short(b.text)}`, union([a.vis, b.vis]));
       }
@@ -380,8 +384,9 @@ export const measure = ({ minFontPx, safeX, safeY, W, H, overlap, forbidden }: R
         nodes.push({ n, first: rs[0], last: rs[rs.length - 1], px: parseFloat(getComputedStyle(n.parentElement).fontSize), space: !n.textContent.trim() });
       }
       /**
-       * Joins text nodes as they read: a rendered space between word spans stays a space, and two pieces get a space
-       * unless they sit side by side on one line (closer than 0.15 em), so "What to" / "do next" never reads "todo".
+       * Joins text nodes as they read: a rendered space (or no-break space) between spans stays a space, and two pieces
+       * get a space unless they sit side by side on one line (closer than 0.15 em, or 0.6 em between single letters), so
+       * "What to" / "do next" never reads "todo" and a tracked-out "N i g h t j a r" reads "Nightjar".
        */
       const join = (list: typeof nodes) => {
         let s = "";
@@ -391,10 +396,13 @@ export const measure = ({ minFontPx, safeX, safeY, W, H, overlap, forbidden }: R
             s += " ";
             continue;
           }
-          if (prev) {
+          if (prev && !s.endsWith(" ")) {
             const p = prev.last, q = x.first;
             const sameLine = Math.min(p.bottom, q.bottom) - Math.max(p.top, q.top) > 0.5 * Math.min(p.bottom - p.top, q.bottom - q.top);
-            if (!sameLine || Math.abs(q.left - p.right) > 0.15 * x.px) s += " ";
+            const gap = Math.abs(q.left - p.right);
+            // Letters set one per span are read as one word even when tracked out; whole words need to touch.
+            const letters = prev.n.textContent!.trim().length === 1 && x.n.textContent!.trim().length === 1;
+            if (!sameLine || gap > (letters ? 0.6 : 0.15) * x.px) s += " ";
           }
           s += x.n.textContent;
           prev = x;

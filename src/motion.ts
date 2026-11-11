@@ -67,10 +67,13 @@ class Scanner {
 
   report(fps: number, opts: Config["motion"]): MotionReport {
     const d = this.diffs;
-    const planned = (t: number) => opts.cuts.some((c) => Math.abs(t - c) < 0.07) || opts.allow.some(([a, b]) => t >= a - 0.07 && t <= b + 0.07);
+    const allowed = (t: number) => opts.allow.some(([a, b]) => t >= a - 0.07 && t <= b + 0.07);
+    const planned = (t: number) => opts.cuts.some((c) => Math.abs(t - c) < 0.07) || allowed(t);
+    // Only the frame on the cut itself: a stray or black frame just after a listed cut is still a pop.
+    const onCut = (t: number) => opts.cuts.some((c) => Math.abs(t - c) < 0.5 / fps) || allowed(t);
     const out: MotionReport = {
       frames: this.n, fps: round(fps), jumps: [], frozen: [],
-      pops: this.pops.map((i, k) => ({ t: round(i / fps), diff: round(this.popDiffs[k]) })).filter((p) => !planned(p.t)),
+      pops: this.pops.map((i, k) => ({ t: round(i / fps), diff: round(this.popDiffs[k]) })).filter((p) => !onCut(p.t)),
     };
     const nearPop = (i: number) => this.pops.some((p) => p === i || p === i + 1);
     // Footage held for several frames (on threes, 10 fps in 30 fps) changes only every few frames, so compare each

@@ -3,8 +3,17 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
+
+const made = [];
+/** A temp directory removed when the file's tests finish. */
+const tmp = (prefix) => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  made.push(d);
+  return d;
+};
+after(() => made.forEach((d) => fs.rmSync(d, { recursive: true, force: true })));
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cli = path.join(here, "..", "dist", "cli.js");
@@ -15,7 +24,7 @@ function raw(...args) {
 }
 
 function run(...args) {
-  const out = fs.mkdtempSync(path.join(os.tmpdir(), "remotion-lint-"));
+  const out = tmp("remotion-lint-");
   const r = raw(...args, "--out", out, "--json");
   assert.ok(r.stdout, `no output; stderr:\n${r.stderr}`);
   return { code: r.status, report: JSON.parse(r.stdout), out };
@@ -42,9 +51,9 @@ test("every planted bug is caught, alone, on its own second", () => {
 });
 
 test("ordinary motion design passes, including mid-transition frames", () => {
-  const secs = ["0.2", "0.9", "1.2", "1.9", ...Array.from({ length: 14 }, (_, i) => String(i + 2.5))];
+  const secs = ["0.2", "0.9", "1.2", "1.9", ...Array.from({ length: 18 }, (_, i) => String(i + 2.5))];
   const { code, report } = run("layout", "Ordinary", ...secs);
-  expectFrames(report, ["moving:clipped", "clean", "moving:clipped", "clean", ...secs.slice(4).map(() => "clean")]);
+  expectFrames(report, ["moving:clipped", "clean", "moving:clipped", "clean", ...secs.slice(4).map((x) => (x === "16.5" ? "moving:clipped" : "clean"))]);
   assert.equal(code, 0);
 });
 
@@ -66,7 +75,7 @@ test("a verdict does not depend on which other seconds are checked, or on sweepi
   for (const [id, sec, want] of [["Ordinary", "1.2", "moving:clipped"], ["Moving", "2", "moving:escapes-box"], ["Moving", "2.1", "moving:escapes-box"]]) {
     expectFrames(run("layout", id, sec).report, [want]);
   }
-  for (const [id, step] of [["Ordinary", "0.25"], ["Moving", "0.1"], ["Transitions", "0.1"]]) {
+  for (const [id, step] of [["Ordinary", "0.1"], ["Moving", "0.1"], ["Transitions", "0.1"], ["Drift", "0.1"]]) {
     const { code, report } = run("layout", id, "--every", step);
     assert.equal(code, 0, `${id} --every ${step}: ${JSON.stringify(report.frames.filter((f) => f.issues.length).map((f) => [f.sec, f.issues.map((i) => i.kind)]))}`);
   }
@@ -74,7 +83,7 @@ test("a verdict does not depend on which other seconds are checked, or on sweepi
 
 test("where a guess would pass a real problem, the problem is reported", () => {
   const expected = ["overlap", "overlap", "too-small", "too-small", "too-small", "clipped", "overlap", "forbidden-word", "clipped", "overlap",
-    "clean", "clean", "clean", "clipped", "too-small"];
+    "clean", "clean", "clean", "clipped", "too-small", "forbidden-word", "clipped", "too-small"];
   const secs = expected.map((_, i) => String(i + (i === 8 ? 0.9 : 0.5)));
   const { code, report } = run("layout", "Cautious", ...secs);
   expected.forEach((e, i) => assert.deepEqual(kinds(report)[i], e === "clean" ? [] : [e], `second ${secs[i]}: expected ${e}`));
@@ -175,6 +184,12 @@ test("diff with nothing to compare fails, and says why", () => {
   assert.match(r.stdout, /box is empty or off screen/);
 });
 
+test("diff fails on one changed number, by the band it sits in", () => {
+  const r = raw("diff", "DiffNumber", "0.5");
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /band \d+\/12 differs by \d+%, over 2%/);
+});
+
 test("diff fails when part of a box is off screen and was not compared", () => {
   const r = raw("diff", "DiffPartial", "0.5");
   assert.equal(r.status, 1);
@@ -182,7 +197,7 @@ test("diff fails when part of a box is off screen and was not compared", () => {
 });
 
 test("an entry that throws while loading fails at once with its own message", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "remotion-lint-config-"));
+  const dir = tmp("remotion-lint-config-");
   const config = path.join(dir, "c.json");
   fs.writeFileSync(config, JSON.stringify({ entryPoint: path.join(example, "src", "throws.ts") }));
   const started = Date.now();
@@ -230,7 +245,7 @@ test("bad input is a one-line error with exit 2, never a stack trace", () => {
 });
 
 test("a config with an unknown key or a bad pattern is refused", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "remotion-lint-config-"));
+  const dir = tmp("remotion-lint-config-");
   const write = (c) => {
     const f = path.join(dir, "c.json");
     fs.writeFileSync(f, JSON.stringify(c));
@@ -250,7 +265,7 @@ test("a config with an unknown key or a bad pattern is refused", () => {
 /** Starts a sweep, sends Ctrl-C once `ready(stdout)` holds, and returns the exit code and stderr. */
 async function interrupt(ready) {
   const { spawn } = await import("node:child_process");
-  const child = spawn(process.execPath, [cli, "layout", "Planted", "--every", "0.05", "--out", fs.mkdtempSync(path.join(os.tmpdir(), "remotion-lint-"))], { cwd: example });
+  const child = spawn(process.execPath, [cli, "layout", "Planted", "--every", "0.05", "--out", tmp("remotion-lint-")], { cwd: example });
   let out = "", err = "";
   child.stdout.on("data", (b) => (out += b));
   child.stderr.on("data", (b) => (err += b));
@@ -286,7 +301,7 @@ test("Ctrl-C while the bundle is still building exits 130 and leaves no bundle b
 test("no bundle is left behind, after a normal run or a build that fails", () => {
   const before = bundles();
   run("layout", "Clean", "0.5");
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "remotion-lint-config-"));
+  const dir = tmp("remotion-lint-config-");
   const config = path.join(dir, "c.json");
   fs.writeFileSync(config, JSON.stringify({ entryPoint: path.join(example, "src", "broken.ts") }));
   const r = raw("layout", "Clean", "0.5", "--config", config);

@@ -83,7 +83,7 @@ async function main(): Promise<number> {
   const outDir = path.resolve(values.out!);
   fs.mkdirSync(outDir, { recursive: true });
   // Screenshots from an earlier run would sit beside this run's report as if they were part of it.
-  for (const f of fs.readdirSync(outDir)) if (/^t\d{3}\.\d{2}(-diff)?\.png$/.test(f)) fs.rmSync(path.join(outDir, f));
+  for (const f of fs.readdirSync(outDir)) if (/^t\d{3,}\.\d{2}(-diff)?\.png$|^(layout|diff|motion)\.json$/.test(f)) fs.rmSync(path.join(outDir, f));
   const log = (s: string) => { if (!values.json) console.log(s); };
 
   let failures: number;
@@ -167,24 +167,29 @@ async function frames(command: string, id: string, rest: string[], every: string
         return cache.get(g)!;
       };
       const inRange = (g: number) => g >= 0 && g < comp.durationInFrames;
-      const limit = Math.round(comp.fps * 2);
+      const limit = Math.round(comp.fps);
       /**
-       * A problem on moving text is judged where that text comes to rest. Follow the text that moved frame by frame,
-       * forward and then backward, up to two seconds each way, until it stops (two frames in a row unchanged): a
-       * slide-in that settles clear, or a title that was clear before it slid out, passes. If it is still there at
-       * rest, or the text never rests within reach (a slow push-in, a marquee), the problem counts.
+       * A problem on moving text is passing if that text is seen without it. Follow the text that moved frame by frame,
+       * up to a second: as soon as it is on screen without the problem (a slide-in
+       * that lands clear, a credit line fully in frame, a lower third settled into a drifting shot) the problem passes.
+       * Looking back is only for text that leaves (an exit). It counts if the text comes to rest still showing it, or
+       * shows it for as long as it can be followed (a caption too small through a whole push-in, a marquee always cut).
        */
       const settlesClear = async (issue: Issue, frame: number, movers: string[]) => {
-        for (const dir of [1, -1]) {
+        const follow = async (dir: number) => {
           let prev = await measureAt(frame);
           for (let g = frame + dir, n = 0; inRange(g) && n < limit; g += dir, n++) {
             const m = await measureAt(g);
-            if (!movers.some((k) => m.runs.some((r) => r.key === k))) break;
-            if (!moved(movers, prev.runs, m.runs)) return !m.issues.some((i) => sameIssue(i, issue));
+            if (!movers.some((k) => m.runs.some((r) => r.key === k))) return "gone";
+            if (!m.issues.some((i) => sameIssue(i, issue))) return "clear";
+            if (!moved(movers, prev.runs, m.runs)) return "stuck";
             prev = m;
           }
-        }
-        return false;
+          return inRange(frame + dir * (limit + 1)) ? "stuck" : "gone";
+        };
+        const ahead = await follow(1);
+        // Looking back is only for text on its way out: one that moves into a problem and stays there counts.
+        return ahead === "clear" || (ahead === "gone" && (await follow(-1)) === "clear");
       };
       const warnings: Array<{ sec: number; message: string }> = [];
       const collect = (sec: number) => {
@@ -232,6 +237,8 @@ async function frames(command: string, id: string, rest: string[], every: string
           if (d.sizeMismatch) reasons.push(`sizes differ: screen ${d.sizeMismatch.screen}, ref ${d.sizeMismatch.ref}`);
           if (d.partial) reasons.push(d.partial);
           if (d.mismatchPct > config.diff.maxMismatchPct) reasons.push(`over ${config.diff.maxMismatchPct}%`);
+          const band = d.hottestRows[0];
+          if (band && band[1] > config.diff.maxBandPct) reasons.push(`band ${band[0]}/12 differs by ${band[1]}%, over ${config.diff.maxBandPct}%`);
           if (reasons.length) failures++;
           fs.writeFileSync(path.join(outDir, `${tag(sec)}-diff.png`), d.sideBySide);
           out.push({ sec, mismatchPct: d.mismatchPct, width: d.width, height: d.height, hottestRows: d.hottestRows, sizeMismatch: d.sizeMismatch, partial: d.partial, fail: reasons.length > 0 });

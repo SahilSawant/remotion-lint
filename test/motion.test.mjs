@@ -3,9 +3,18 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { analyse } from "../dist/motion.js";
+
+const made = [];
+/** A temp directory removed when the file's tests finish. */
+const tmp = (prefix) => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  made.push(d);
+  return d;
+};
+after(() => made.forEach((d) => fs.rmSync(d, { recursive: true, force: true })));
 
 const cli = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "dist", "cli.js");
 const opts = { cuts: [], allow: [], frozenSeconds: 2, failOnFrozen: false };
@@ -59,6 +68,8 @@ test("a flash on a planned cut, or a glitch inside an allowed stretch, is not a 
   const flash = [...hold(30, 60), frame(250), ...hold(30, 60)];
   assert.deepEqual(analyse(flash, 30, opts).pops.map((p) => p.t), [1]);
   assert.deepEqual(analyse(flash, 30, { ...opts, cuts: [1] }).pops, []);
+  const stray = [...hold(30, 60), frame(200), frame(60), ...hold(30, 200)];
+  assert.deepEqual(analyse(stray, 30, { ...opts, cuts: [1] }).pops.map((p) => p.t), [1.03], "a stray frame just after a listed cut is still a pop");
   const glitch = [...hold(30, 60), ...Array.from({ length: 10 }, (_, i) => frame(i % 2 ? 200 : 60)), ...hold(30, 60)];
   assert.ok(analyse(glitch, 30, opts).pops.length > 0);
   const allowed = analyse(glitch, 30, { ...opts, allow: [[1, 1.33]] });
@@ -89,7 +100,7 @@ const hasFfmpeg = spawnSync(FFMPEG, ["-version"]).status === 0;
 if (!hasFfmpeg && process.env.REMOTION_LINT_REQUIRE_FFMPEG) throw new Error("ffmpeg is required for this run but was not found");
 
 test("a still picture in a lossy video is one frozen stretch, not split at keyframes", { skip: !hasFfmpeg && "ffmpeg not installed" }, () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "remotion-lint-motion-"));
+  const dir = tmp("remotion-lint-motion-");
   const video = path.join(dir, "still.mp4");
   const pic = new Uint8Array(W * H).map((_, i) => (i * 7919) % 251);
   const f = Array.from({ length: 300 }, () => pic);
@@ -100,7 +111,7 @@ test("a still picture in a lossy video is one frozen stretch, not split at keyfr
 });
 
 test("the CLI decodes a real video end to end", { skip: !hasFfmpeg && "ffmpeg not installed" }, () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "remotion-lint-motion-"));
+  const dir = tmp("remotion-lint-motion-");
   const video = path.join(dir, "clip.mp4");
   const f = [...hold(30, 40), ...wipe(8, 40, 200), ...hold(30, 200), ...hold(30, 60)];
   f[90] = frame(220);

@@ -29,9 +29,11 @@ export interface Config {
     threshold: number;
     /** A frame fails when more than this percentage of the screen differs from its reference. */
     maxMismatchPct: number;
+    /** A frame also fails when more than this percentage of any one of 12 horizontal bands differs: a changed word or number. */
+    maxBandPct: number;
   };
   motion: {
-    /** Planned cuts in seconds; a jump or pop within 0.07 s of one is not reported. `--cuts` adds to these. */
+    /** Planned cuts in seconds: a jump within 0.07 s, or a pop on the cut frame itself, is not reported. `--cuts` adds to these. */
     cuts: number[];
     /** Stretches [from, to] in seconds where jumps and pops are intended (a glitch effect, a strobe). */
     allow: Array<[number, number]>;
@@ -58,7 +60,7 @@ export const defaults: Config = {
   entryPoint: "src/index.ts",
   props: {},
   layout: { minFontPx: 28, safeArea: "5%", overlap: 0.15, forbidden: [] },
-  diff: { threshold: 0.12, maxMismatchPct: 1 },
+  diff: { threshold: 0.12, maxMismatchPct: 1, maxBandPct: 2 },
   motion: { cuts: [], allow: [], frozenSeconds: 2, failOnFrozen: false },
   browserChannel: "",
 };
@@ -102,7 +104,7 @@ const SCHEMA: Record<string, Kind | Record<string, Kind>> = {
   props: "object",
   browserChannel: "string",
   layout: { minFontPx: "number", safeArea: "margin", overlap: "number", forbidden: "string[]" },
-  diff: { threshold: "number", maxMismatchPct: "number" },
+  diff: { threshold: "number", maxMismatchPct: "number", maxBandPct: "number" },
   motion: { cuts: "number[]", allow: "ranges", frozenSeconds: "number", failOnFrozen: "boolean" },
 };
 
@@ -142,6 +144,7 @@ export function validate(user: unknown, name = "config"): void {
   range("layout.overlap", u.layout?.overlap, 0, 1);
   range("diff.threshold", u.diff?.threshold, 0, 1);
   range("diff.maxMismatchPct", u.diff?.maxMismatchPct, 0, 100);
+  range("diff.maxBandPct", u.diff?.maxBandPct, 0, 100);
   range("motion.frozenSeconds", u.motion?.frozenSeconds, 0.01);
   for (const c of u.motion?.cuts ?? []) range("motion.cuts", c, 0);
   for (const f of u.layout?.forbidden ?? []) {
