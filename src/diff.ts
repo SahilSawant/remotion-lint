@@ -13,6 +13,8 @@ export interface DiffResult {
   sideBySide: Buffer;
   /** Set when the two boxes differ in size by more than a pixel; only their common top-left area is compared. */
   sizeMismatch?: { screen: string; ref: string };
+  /** Set when part of a box is off screen, so only the part both boxes show was compared. */
+  partial?: string;
 }
 
 function crop(src: PNG, x: number, y: number, w: number, h: number): PNG {
@@ -76,6 +78,7 @@ export async function diffFrame(page: Page, threshold: number): Promise<DiffResu
     height: h,
     hottestRows: rowPct.sort((x, y) => y[1] - x[1]).slice(0, 3),
     sideBySide: PNG.sync.write(side),
+    ...(w < Math.min(s.w, r.w) - 1 || h < Math.min(s.h, r.h) - 1 ? { partial: `only ${w}x${h} of the boxes is on screen` } : {}),
     ...(Math.abs(s.w - r.w) > 1 || Math.abs(s.h - r.h) > 1 ? { sizeMismatch: { screen: `${s.w}x${s.h}`, ref: `${r.w}x${r.h}` } } : {}),
   };
 }

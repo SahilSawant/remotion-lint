@@ -8,7 +8,7 @@ export interface MotionReport {
   fps: number;
   /** A frame-to-frame change far bigger than the two nearest changes on each side (within 8 frames), not near a planned cut. */
   jumps: Array<{ t: number; diff: number; around: number }>;
-  /** A single frame that differs from both neighbours while they match each other. */
+  /** A single frame that differs from both neighbours while they match each other, not at a planned cut or in an allowed stretch. */
   pops: Array<{ t: number; diff: number }>;
   /** Stretches with no visible change, as [first still frame, last still frame] in seconds. */
   frozen: Array<[number, number]>;
@@ -67,7 +67,11 @@ class Scanner {
 
   report(fps: number, opts: Config["motion"]): MotionReport {
     const d = this.diffs;
-    const out: MotionReport = { frames: this.n, fps: round(fps), jumps: [], pops: this.pops.map((i, k) => ({ t: round(i / fps), diff: round(this.popDiffs[k]) })), frozen: [] };
+    const planned = (t: number) => opts.cuts.some((c) => Math.abs(t - c) < 0.07) || opts.allow.some(([a, b]) => t >= a - 0.07 && t <= b + 0.07);
+    const out: MotionReport = {
+      frames: this.n, fps: round(fps), jumps: [], frozen: [],
+      pops: this.pops.map((i, k) => ({ t: round(i / fps), diff: round(this.popDiffs[k]) })).filter((p) => !planned(p.t)),
+    };
     const nearPop = (i: number) => this.pops.some((p) => p === i || p === i + 1);
     // Footage held for several frames (on threes, 10 fps in 30 fps) changes only every few frames, so compare each
     // change with the nearest real changes either side, not with the held frames in between.
@@ -79,7 +83,7 @@ class Scanner {
     d.forEach((v, i) => {
       const around = Math.max(0, ...nearest(i, -1), ...nearest(i, 1));
       const t = (i + 1) / fps;
-      if (v > 6 && v > 4 * (around + 0.3) && !nearPop(i) && !opts.cuts.some((c) => Math.abs(t - c) < 0.07)) out.jumps.push({ t: round(t), diff: round(v), around: round(around) });
+      if (v > 6 && v > 4 * (around + 0.3) && !nearPop(i) && !planned(t)) out.jumps.push({ t: round(t), diff: round(v), around: round(around) });
     });
     const minRun = Math.round(opts.frozenSeconds * fps);
     // A lossy codec refreshes a still picture at each keyframe: one small blip inside a still stretch is not motion.

@@ -23,12 +23,12 @@ function run(...args) {
 
 const kinds = (report) => report.frames.map((f) => f.issues.map((i) => i.kind));
 const movingKinds = (report) => report.frames.map((f) => f.moving.map((i) => i.kind));
-/** Checks each frame against "clean", a failing kind, or "moving:<kind>" (shown, not counted). */
+/** Checks each frame against "clean", a failing kind, or "moving:<kind>" (nothing counted, and <kind> among the moving). */
 function expectFrames(report, expected) {
   expected.forEach((e, i) => {
     const [got, mov] = [kinds(report)[i], movingKinds(report)[i]];
     if (e === "clean") assert.deepEqual([got, mov], [[], []], `frame ${i}: expected clean`);
-    else if (e.startsWith("moving:")) assert.deepEqual([got, mov], [[], [e.slice(7)]], `frame ${i}: expected ${e}`);
+    else if (e.startsWith("moving:")) assert.ok(!got.length && mov.includes(e.slice(7)), `frame ${i}: expected ${e}, got ${JSON.stringify([got, mov])}`);
     else assert.deepEqual(got, [e], `frame ${i}: expected ${e}`);
   });
 }
@@ -56,10 +56,30 @@ test("problems hidden in SVG, rotation, long text, split letters, clips, inputs,
   assert.equal(code, 1);
 });
 
-test("text that is moving or changing is shown, not counted", () => {
-  const { code, report } = run("layout", "Moving", "0.1", "1.1");
+test("text that is moving and settles clear is shown, not counted", () => {
+  const { code, report } = run("layout", "Moving", "0.1", "2.1");
   expectFrames(report, ["moving:too-small", "moving:escapes-box"]);
   assert.equal(code, 0);
+});
+
+test("a verdict does not depend on which other seconds are checked, or on sweeping", () => {
+  for (const [id, sec, want] of [["Ordinary", "1.2", "moving:clipped"], ["Moving", "2", "moving:escapes-box"], ["Moving", "2.1", "moving:escapes-box"]]) {
+    expectFrames(run("layout", id, sec).report, [want]);
+  }
+  for (const [id, step] of [["Ordinary", "0.25"], ["Moving", "0.1"], ["Transitions", "0.1"]]) {
+    const { code, report } = run("layout", id, "--every", step);
+    assert.equal(code, 0, `${id} --every ${step}: ${JSON.stringify(report.frames.filter((f) => f.issues.length).map((f) => [f.sec, f.issues.map((i) => i.kind)]))}`);
+  }
+});
+
+test("where a guess would pass a real problem, the problem is reported", () => {
+  const expected = ["overlap", "overlap", "too-small", "too-small", "too-small", "clipped", "overlap", "forbidden-word", "clipped", "overlap",
+    "clean", "clean", "clean", "clipped", "too-small"];
+  const secs = expected.map((_, i) => String(i + (i === 8 ? 0.9 : 0.5)));
+  const { code, report } = run("layout", "Cautious", ...secs);
+  expected.forEach((e, i) => assert.deepEqual(kinds(report)[i], e === "clean" ? [] : [e], `second ${secs[i]}: expected ${e}`));
+  assert.match(JSON.stringify(report.warnings), /OffthreadVideo/);
+  assert.equal(code, 1);
 });
 
 test("problems that stay put fail, even in one-second scenes, rotated, off the frame, or on a counter whose digits change", () => {
@@ -69,8 +89,8 @@ test("problems that stay put fail, even in one-second scenes, rotated, off the f
 });
 
 test("Remotion's fade and wipe transitions are motion, and each scene alone is clean", () => {
-  const { code, report } = run("layout", "Transitions", "0.5", "1.5", "2.5", "3.5");
-  expectFrames(report, ["clean", "moving:overlap", "moving:overlap", "clean"]);
+  const { code, report } = run("layout", "Transitions", "0.5", "2.5", "3.5", "4.5", "6.5");
+  expectFrames(report, ["clean", "moving:overlap", "clean", "moving:overlap", "clean"]);
   assert.equal(code, 0);
 });
 
@@ -155,6 +175,31 @@ test("diff with nothing to compare fails, and says why", () => {
   assert.match(r.stdout, /box is empty or off screen/);
 });
 
+test("diff fails when part of a box is off screen and was not compared", () => {
+  const r = raw("diff", "DiffPartial", "0.5");
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /only \d+x\d+ of the boxes is on screen/);
+});
+
+test("an entry that throws while loading fails at once with its own message", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "remotion-lint-config-"));
+  const config = path.join(dir, "c.json");
+  fs.writeFileSync(config, JSON.stringify({ entryPoint: path.join(example, "src", "throws.ts") }));
+  const started = Date.now();
+  const r = raw("layout", "Clean", "0.5", "--config", config);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /the project threw while loading: .*module scope boom/);
+  assert.ok(Date.now() - started < 25_000, `took ${Date.now() - started} ms`);
+});
+
+test("--version prints the version, and old screenshots are cleared from --out", () => {
+  assert.match(raw("--version").stdout, /^\d+\.\d+\.\d+\n$/);
+  const { out } = run("layout", "Planted", "2.5");
+  assert.ok(fs.existsSync(path.join(out, "t002.50.png")));
+  raw("layout", "Clean", "0.5", "--out", out);
+  assert.ok(!fs.existsSync(path.join(out, "t002.50.png")));
+});
+
 test("diff refuses a reference laid over the rebuild, since both crops would be the same pixels", () => {
   const r = raw("diff", "DiffOnion", "0.5");
   assert.equal(r.status, 2);
@@ -166,6 +211,7 @@ test("bad input is a one-line error with exit 2, never a stack trace", () => {
     [["layout", "Nope", "0.5"], /no composition "Nope"; found: Planted/],
     [["layout", "Clean", "9"], /9s is outside Clean/],
     [["layout", "Clean", "1.5s"], /"1.5s" is not a number of seconds/],
+    [["layout", "Clean", ""], /"" is not a number of seconds/],
     [["layout", "Clean", "--every", "abc"], /--every must be a positive number/],
     [["layout", "Clean", "0.5", "--every", "1"], /either seconds or --every/],
     [["layout", "Clean", "0.5", "--bogus"], /Unknown option '--bogus'/],

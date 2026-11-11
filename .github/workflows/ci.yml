@@ -6,6 +6,8 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+permissions:
+  contents: read
 env:
   REMOTION_LINT_REQUIRE_FFMPEG: "1"
 jobs:
@@ -16,8 +18,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { node: 20, remotion: "" }
           - { node: 22, remotion: "" }
+          - { node: 24, remotion: "" }
           - { node: 22, remotion: "4.0.53", react: "18.3.1" }
           - { node: 22, remotion: "4.0.200", react: "18.3.1" }
           - { node: 22, remotion: "4.0.350", react: "18.3.1" }
@@ -34,3 +36,30 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: npm test
+  package:
+    name: packed tarball works in a fresh project
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci && npm run build && npm pack
+      - name: install the tarball beside Remotion and lint the example
+        run: |
+          set -eu
+          tgz="$PWD/$(ls remotion-lint-*.tgz)"
+          app="$RUNNER_TEMP/app"
+          mkdir -p "$app" && cp -r example/src example/remotion-lint.config.mjs "$app"
+          cd "$app"
+          npm init -y >/dev/null
+          v=$(node -p "require('$GITHUB_WORKSPACE/package.json').devDependencies.remotion")
+          npm install "$tgz" remotion@$v @remotion/bundler@$v @remotion/transitions@$v react@19.1.0 react-dom@19.1.0
+          node node_modules/playwright/cli.js install --with-deps chromium
+          npx remotion-lint --version
+          set +e
+          npx remotion-lint layout Planted 2.5; code=$?
+          set -e
+          test "$code" -eq 1

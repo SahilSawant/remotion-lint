@@ -2,7 +2,7 @@ import React from "react";
 import { TransitionSeries, linearTiming } from "@remotion/transitions";
 import { fade } from "@remotion/transitions/fade";
 import { wipe } from "@remotion/transitions/wipe";
-import { AbsoluteFill, Composition, Img, interpolate, Sequence, spring, useCurrentFrame, useVideoConfig } from "remotion";
+import { AbsoluteFill, Composition, Img, interpolate, OffthreadVideo, Sequence, spring, staticFile, useCurrentFrame, useVideoConfig } from "remotion";
 
 const font: React.CSSProperties = { fontFamily: "Helvetica, Arial, sans-serif", fontSize: 48, color: "#111" };
 const at = (left: number, top: number): React.CSSProperties => ({ position: "absolute", left, top });
@@ -76,11 +76,26 @@ const Diff: React.FC = () => {
 };
 
 
-const Reveal: React.FC = () => {
-  const y = interpolate(useCurrentFrame(), [0, 20], [100, 0], { extrapolateRight: "clamp" });
+const Reveal: React.FC<{ frames?: number }> = ({ frames = 20 }) => {
+  const y = interpolate(useCurrentFrame(), [0, frames], [100, 0], { extrapolateRight: "clamp" });
   return (
     <div style={{ ...at(200, 200), overflow: "hidden", height: 96 }}>
       <div style={{ ...font, fontSize: 96, lineHeight: 1, transform: `translateY(${y}%)` }}>Revealed title</div>
+    </div>
+  );
+};
+
+const WordCaption: React.FC = () => {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  return (
+    <div style={{ ...font, ...at(200, 400) }}>
+      {"Ship the first draft".split(" ").map((w, i) => (
+        <React.Fragment key={i}>
+          {i ? " " : ""}
+          <span style={{ display: "inline-block", transform: `scale(${spring({ frame: frame - i * 3, fps, config: { damping: 200 } })})` }}>{w}</span>
+        </React.Fragment>
+      ))}
     </div>
   );
 };
@@ -152,9 +167,9 @@ export const ORDINARY: Array<[number, string, React.ReactNode]> = [
       <div style={{ ...font, ...at(700, 500) }}>Not clipped by that box</div>
     </div>
   )],
-  [12, "a giant pale chapter number behind a title", (
+  [12, "a giant pale chapter number behind a title, marked as intended", (
     <>
-      <div style={{ ...font, ...at(200, 120), fontSize: 400, fontWeight: 900, color: "#eeeeee" }}>01</div>
+      <div data-lint-ignore="overlap" style={{ ...font, ...at(200, 120), fontSize: 400, fontWeight: 900, color: "#eeeeee" }}>01</div>
       <div style={{ ...font, ...at(260, 300), fontSize: 72 }}>Chapter one</div>
     </>
   )],
@@ -171,6 +186,8 @@ export const ORDINARY: Array<[number, string, React.ReactNode]> = [
     </>
   )],
   [15, "subtitles 70 px above the bottom edge", <div style={{ ...font, position: "absolute", left: 400, bottom: 70 }}>Subtitles sit low on the frame</div>],
+  [16, "a mask reveal that takes most of a second", <Reveal frames={24} />],
+  [17, "word-by-word spring caption, with real spaces between the word spans", <WordCaption />],
 ];
 
 const caption = <div style={{ ...font, ...at(200, 500), fontSize: 14 }}>Fine print nobody can read</div>;
@@ -256,10 +273,10 @@ export const MISSED: Array<[number, string, React.ReactNode]> = [
   )],
 ];
 
-const Strip: React.FC<{ items: Array<[number, string, React.ReactNode]> }> = ({ items }) => (
+const Strip: React.FC<{ items: Array<[number, string, React.ReactNode]>; seconds?: number }> = ({ items, seconds = 1 }) => (
   <AbsoluteFill style={{ background: "#fff" }}>
     {items.map(([sec, , node]) => (
-      <Sequence key={sec} from={sec * 30} durationInFrames={30}>
+      <Sequence key={sec} from={sec * 30 * seconds} durationInFrames={30 * seconds}>
         {node}
       </Sequence>
     ))}
@@ -302,21 +319,79 @@ const Title: React.FC<{ text: string; bg: string }> = ({ text, bg }) => (
   </AbsoluteFill>
 );
 
-/** Two centred titles joined by Remotion's own transitions: fade, then wipe. */
+/** Three centred titles joined by Remotion's own transitions, fade then wipe, each title at rest for a second between them. */
 const Transitions: React.FC = () => (
   <TransitionSeries>
-    <TransitionSeries.Sequence durationInFrames={60}><Title text="First scene title" bg="#fff" /></TransitionSeries.Sequence>
+    <TransitionSeries.Sequence durationInFrames={90}><Title text="First scene title" bg="#fff" /></TransitionSeries.Sequence>
     <TransitionSeries.Transition presentation={fade()} timing={linearTiming({ durationInFrames: 30 })} />
-    <TransitionSeries.Sequence durationInFrames={60}><Title text="Second scene title" bg="#f4f4f4" /></TransitionSeries.Sequence>
+    <TransitionSeries.Sequence durationInFrames={90}><Title text="Second scene title" bg="#f4f4f4" /></TransitionSeries.Sequence>
     <TransitionSeries.Transition presentation={wipe()} timing={linearTiming({ durationInFrames: 30 })} />
-    <TransitionSeries.Sequence durationInFrames={60}><Title text="Third scene title" bg="#fff" /></TransitionSeries.Sequence>
+    <TransitionSeries.Sequence durationInFrames={90}><Title text="Third scene title" bg="#fff" /></TransitionSeries.Sequence>
   </TransitionSeries>
 );
 
-/** Moving or changing text: shown as warnings, never counted. */
+/** Moving text that settles clear: shown as warnings, never counted. Two seconds per item, so each has time to settle. */
 export const MOVING: Array<[number, string, React.ReactNode]> = [
   [0, "a spring scale-in starting from zero", <ScalePop />],
   [1, "text rising into its card", <CardRise />],
+];
+
+const Typewriter: React.FC = () => (
+  <div style={{ ...font, ...at(200, 300), width: 500, overflow: "hidden", whiteSpace: "nowrap" }}>
+    {"This caption keeps typing until the cut".slice(0, useCurrentFrame() * 2)}
+  </div>
+);
+
+const ZoomChunk: React.FC = () => (
+  <>
+    <div style={{ ...font, ...at(400, 400) }}>Static headline here</div>
+    <div style={{ ...font, ...at(420, 410), color: "#c00", transform: `scale(${1 + useCurrentFrame() * 0.002})` }}>A caption chunk</div>
+  </>
+);
+
+const pair = (style: React.CSSProperties) => (
+  <>
+    <div style={{ ...font, ...at(400, 400), ...style }}>First line</div>
+    <div style={{ ...font, ...at(420, 410), ...style }}>Second line</div>
+  </>
+);
+const smallCaption = <div style={{ ...font, ...at(200, 500), fontSize: 14 }}>Fine print nobody can read</div>;
+
+/** Cases where a guess would have passed a real problem. Each second must report exactly its kind. */
+export const CAUTIOUS: Array<[number, string, React.ReactNode]> = [
+  [0, "overlap", <AbsoluteFill style={{ background: "linear-gradient(#000, #223)" }}>{pair({ color: "#fff" })}</AbsoluteFill>],
+  [1, "overlap", pair({ fontSize: 96, fontWeight: 900, color: "transparent", backgroundImage: "linear-gradient(90deg, #f0f, #0cf)", WebkitBackgroundClip: "text", backgroundClip: "text" })],
+  [2, "too-small", <>{smallCaption}<AbsoluteFill style={{ background: "#000", maskImage: "linear-gradient(to top, black, transparent 40%)" }} /></>],
+  [3, "too-small", <>{smallCaption}<AbsoluteFill style={{ background: "#000", filter: "opacity(0.2)" }} /></>],
+  [4, "too-small", <>{smallCaption}<OffthreadVideo src={staticFile("overlay.mp4")} style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }} /></>],
+  [5, "clipped", <div style={{ ...font, ...at(200, 200), clipPath: "inset(0 40% 0 0)", whiteSpace: "nowrap" }}>A title cut by its clip path at rest</div>],
+  [6, "overlap", (
+    <div style={{ ...font, ...at(200, 200), width: 400 }}>
+      A title long enough to wrap onto three lines here
+      <div style={{ position: "absolute", top: 70, color: "#c00" }}>Subtitle</div>
+    </div>
+  )],
+  [7, "forbidden-word", (
+    <div style={{ ...font, ...at(200, 200), display: "flex", gap: "0.4em" }}>
+      {"Nightjar".split("").map((c, i) => <span key={i}>{c}</span>)}
+    </div>
+  )],
+  [8, "clipped", <Typewriter />],
+  [9, "overlap", <ZoomChunk />],
+  [10, "clean", <div style={{ ...font, ...at(20, 500), clipPath: "circle(0% at 50% 50%)" }}>Nightjar, not revealed yet</div>],
+  [11, "clean", (
+    <div style={{ ...at(200, 300), fontFamily: "Helvetica, Arial, sans-serif", fontWeight: 900, fontSize: 140, lineHeight: 0.8 }}>
+      <div style={{ overflow: "hidden" }}>BUILD</div>
+      <div style={{ overflow: "hidden" }}>FASTER</div>
+    </div>
+  )],
+  [12, "clean", (
+    <div style={{ ...font, ...at(200, 200) }}>
+      {"What to do next".split(" ").map((w, i) => <React.Fragment key={i}>{i ? " " : ""}<span>{w}</span></React.Fragment>)}
+    </div>
+  )],
+  [13, "clipped", <div style={{ ...at(200, 200), width: 300, height: 80, contain: "paint" }}><div style={{ ...font, whiteSpace: "nowrap" }}>Cut by a paint containment box</div></div>],
+  [14, "too-small", <div style={{ visibility: "hidden" }}><div style={{ ...font, ...at(200, 300), fontSize: 14, visibility: "visible" }}>Visible inside a hidden parent</div></div>],
 ];
 
 /** Problems that stay put. Each must fail even inside short scenes. */
@@ -345,9 +420,9 @@ export const Root: React.FC = () => (
     <Composition id="WithProps" component={WithProps} defaultProps={{ title: "hello props" }} durationInFrames={30} fps={30} width={1920} height={1080} />
     <Composition id="Crash" component={Crash} durationInFrames={30} fps={30} width={1920} height={1080} />
     <Composition id="Noisy" component={Noisy} durationInFrames={30} fps={30} width={1920} height={1080} />
-    <Composition id="Moving" component={() => <Strip items={MOVING} />} durationInFrames={MOVING.length * 30} fps={30} width={1920} height={1080} />
+    <Composition id="Moving" component={() => <Strip items={MOVING} seconds={2} />} durationInFrames={MOVING.length * 60} fps={30} width={1920} height={1080} />
     <Composition id="Static" component={() => <Strip items={STATIC} />} durationInFrames={STATIC.length * 30} fps={30} width={1920} height={1080} />
-    <Composition id="Transitions" component={Transitions} durationInFrames={120} fps={30} width={1920} height={1080} />
+    <Composition id="Transitions" component={Transitions} durationInFrames={210} fps={30} width={1920} height={1080} />
     <Composition id="DiffSize" component={() => (
       <AbsoluteFill style={{ background: "#fff", flexDirection: "row", alignItems: "flex-start", gap: 100, padding: 200 }}>
         <div data-lint="screen" style={{ width: 300, height: 600, background: "#f4f4f4" }} />
@@ -355,6 +430,13 @@ export const Root: React.FC = () => (
       </AbsoluteFill>
     )} durationInFrames={30} fps={30} width={1920} height={1080} />
     <Composition id="Overlays" component={() => <Strip items={OVERLAYS} />} durationInFrames={OVERLAYS.length * 30} fps={30} width={1920} height={1080} />
+    <Composition id="Cautious" component={() => <Strip items={CAUTIOUS} />} durationInFrames={CAUTIOUS.length * 30} fps={30} width={1920} height={1080} />
+    <Composition id="DiffPartial" component={() => (
+      <AbsoluteFill style={{ background: "#fff" }}>
+        <div data-lint="screen" style={{ ...at(200, 200), width: 600, height: 300, background: "#f4f4f4" }}><div style={{ ...at(420, 0), width: 180, height: 300, background: "#e33" }} /></div>
+        <div data-lint="ref" style={{ ...at(1500, 200), width: 600, height: 300, background: "#f4f4f4" }} />
+      </AbsoluteFill>
+    )} durationInFrames={30} fps={30} width={1920} height={1080} />
     <Composition id="FourK" component={() => <div style={{ ...font, ...at(400, 400), fontSize: 30 }}>Thirty pixels on a 4K frame</div>} durationInFrames={30} fps={30} width={3840} height={2160} />
     <Composition id="BadMeta" component={Meta} defaultProps={{ n: 1 }} calculateMetadata={() => { throw new Error("metadata exploded"); }} fps={30} width={1920} height={1080} />
     <Composition id="DiffOnion" component={() => (

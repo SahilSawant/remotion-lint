@@ -1,8 +1,10 @@
 import { bundle, type WebpackOverrideFn } from "@remotion/bundler";
 import { chromium, type Browser, type Page } from "playwright";
+import { PNG } from "pngjs";
 import fs from "node:fs";
 import http from "node:http";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -76,7 +78,14 @@ function renderEnvironment(inputProps: string) {
 function serve(dir: string): Promise<http.Server> {
   const root = path.resolve(dir) + path.sep;
   const server = http.createServer((req, res) => {
-    const p = path.resolve(root, "." + decodeURIComponent(new URL(req.url ?? "/", "http://x").pathname));
+    let p: string;
+    try {
+      p = path.resolve(root, "." + decodeURIComponent(new URL(req.url ?? "/", "http://x").pathname));
+    } catch {
+      res.writeHead(400);
+      res.end();
+      return;
+    }
     if (!p.startsWith(root) || !fs.existsSync(p) || fs.statSync(p).isDirectory()) {
       res.writeHead(404);
       res.end();
@@ -121,6 +130,11 @@ const RENDER_ERROR = /error occurred in the <|\bat (?:renderWithHooks|beginWork|
  */
 export async function openComposition({ entryPoint, id, channel, props, webpackOverride, onCleanup }: OpenOptions): Promise<CompositionPage> {
   if (!fs.existsSync(entryPoint)) throw new Error(`entry point not found: ${entryPoint} (set entryPoint in remotion-lint.config.mjs)`);
+  const project = versionOf("remotion", entryPoint);
+  const bundler = versionOf("@remotion/bundler", fileURLToPath(import.meta.url));
+  if (project && bundler && project !== bundler) {
+    throw new Error(`your project has remotion ${project} but remotion-lint found @remotion/bundler ${bundler}; install @remotion/bundler@${project}`);
+  }
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "remotion-lint-bundle-"));
   let server: http.Server | undefined;
   let browser: Browser | undefined;
@@ -141,17 +155,46 @@ export async function openComposition({ entryPoint, id, channel, props, webpackO
     await page.addInitScript(renderEnvironment, JSON.stringify(props ?? {}));
     const errors: string[] = [];
     const warnings: string[] = [];
-    page.on("pageerror", (e) => errors.push(e.message));
+    let onError: (() => void) | undefined;
+    page.on("pageerror", (e) => {
+      errors.push(e.message);
+      onError?.();
+    });
     page.on("console", (m) => {
       if (m.type() !== "error") return;
       const first = m.text().split("\n")[0];
       (RENDER_ERROR.test(m.text()) ? errors : warnings).push(first);
+      onError?.();
     });
-    await page.goto(`${base}/index.html`);
-    await page.waitForFunction(() => typeof (window as any).remotion_setBundleMode === "function");
-    await page.evaluate(() => (window as any).remotion_setBundleMode({ type: "evaluation" }));
-    await page.waitForFunction(() => (window as any).remotion_renderReady === true || !!(window as any).remotion_cancelledError, null, { timeout: 60_000 });
-    const meta = await page.evaluate(async (compId) => {
+    /** Runs a setup step, failing at once with the project's own error if the page throws meanwhile, not after a timeout. */
+    const loading = async <T>(work: Promise<T>): Promise<T> => {
+      work.catch(() => {});
+      const failed = new Promise<never>((_, reject) => {
+        onError = () => {
+          if (errors.length) reject(new Error(`the project threw while loading: ${errors.splice(0).join("; ")}`));
+        };
+        onError();
+      });
+      failed.catch(() => {});
+      try {
+        return await Promise.race([work, failed]);
+      } finally {
+        onError = undefined;
+      }
+    };
+    // <OffthreadVideo> asks the renderer's frame server for each frame. There is none here, so it gets a blank frame.
+    const blank = PNG.sync.write(new PNG({ width: 1, height: 1 }));
+    let offthread = false;
+    await page.route(/^http:\/\/localhost:0\/proxy/, (route) => {
+      if (!offthread) warnings.push("<OffthreadVideo> frames are shown blank: remotion-lint checks the text and layout around them, not the video");
+      offthread = true;
+      return route.fulfill({ status: 200, contentType: "image/png", body: blank });
+    });
+    await loading(page.goto(`${base}/index.html`));
+    await loading(page.waitForFunction(() => typeof (window as any).remotion_setBundleMode === "function"));
+    await loading(page.evaluate(() => (window as any).remotion_setBundleMode({ type: "evaluation" })));
+    await loading(page.waitForFunction(() => (window as any).remotion_renderReady === true || !!(window as any).remotion_cancelledError, null, { timeout: 60_000 }));
+    const meta = await loading(page.evaluate(async (compId) => {
       const w = window as any;
       const step = async <T>(what: string, f: () => T | Promise<T>) => {
         try {
@@ -168,8 +211,12 @@ export async function openComposition({ entryPoint, id, channel, props, webpackO
       if ("error" in calc) return { error: calc.error };
       const c = calc.ok;
       return { fps: c.fps as number, durationInFrames: c.durationInFrames as number, width: c.width as number, height: c.height as number, props: c.serializedResolvedPropsWithCustomSchema as string };
-    }, id);
-    if ("error" in meta) throw new Error(meta.error);
+    }, id));
+    if ("error" in meta) {
+      const message = String(meta.error);
+      const logged = [...errors, ...warnings].filter((m) => !message.includes(m));
+      throw new Error(`${message}${logged.length ? ` (the page logged: ${logged.join("; ")})` : ""}`);
+    }
     await page.setViewportSize({ width: meta.width, height: meta.height });
     await page.evaluate(([compId, m, p]) => {
       (window as any).remotion_setBundleMode({
@@ -230,4 +277,21 @@ async function launch(channel?: string): Promise<Browser> {
     const cli = path.join(path.dirname(createRequire(import.meta.url).resolve("playwright/package.json")), "cli.js");
     throw new Error(`Chromium is not installed for remotion-lint's copy of Playwright. Run:\n  node "${cli}" install chromium\n(${msg.split("\n")[0]})`);
   }
+}
+
+/** The version of package `name` as resolved from file `from`, or undefined when it cannot be found. */
+function versionOf(name: string, from: string): string | undefined {
+  try {
+    let d = path.dirname(createRequire(from).resolve(name));
+    for (; d !== path.dirname(d); d = path.dirname(d)) {
+      const f = path.join(d, "package.json");
+      if (fs.existsSync(f)) {
+        const pkg = JSON.parse(fs.readFileSync(f, "utf8"));
+        if (pkg.name === name) return pkg.version;
+      }
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
 }

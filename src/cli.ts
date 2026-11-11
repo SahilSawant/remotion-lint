@@ -18,6 +18,7 @@ options
   --out <dir>      where screenshots and the JSON report go (default: lint-out)
   --config <file>  config file (default: remotion-lint.config.{mjs,js,ts,json} in cwd)
   --json           print the report as JSON instead of lines
+  --version        print the version
 
 exit codes: 0 clean, 1 problems found, 2 the check could not run`;
 
@@ -39,6 +40,7 @@ async function main(): Promise<number> {
         config: { type: "string" },
         json: { type: "boolean", default: false },
         help: { type: "boolean", short: "h", default: false },
+        version: { type: "boolean", short: "v", default: false },
       },
     });
   } catch (e) {
@@ -47,6 +49,10 @@ async function main(): Promise<number> {
   const { values, positionals } = parsed;
   if (values.help) {
     console.log(USAGE);
+    return 0;
+  }
+  if (values.version) {
+    console.log(JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version);
     return 0;
   }
   const [command, target, ...rest] = positionals;
@@ -70,8 +76,14 @@ async function main(): Promise<number> {
     if (bad !== undefined) throw new UsageError(`--cuts takes seconds separated by commas, got "${bad}"`);
     config.motion = { ...config.motion, cuts: [...config.motion.cuts, ...cuts.map(Number)] };
   }
+  if (command !== "motion") {
+    const bad = rest.find((s) => !/^\d+(\.\d+)?$|^\.\d+$/.test(s.trim()));
+    if (bad !== undefined) throw new UsageError(`"${bad}" is not a number of seconds`);
+  }
   const outDir = path.resolve(values.out!);
   fs.mkdirSync(outDir, { recursive: true });
+  // Screenshots from an earlier run would sit beside this run's report as if they were part of it.
+  for (const f of fs.readdirSync(outDir)) if (/^t\d{3}\.\d{2}(-diff)?\.png$/.test(f)) fs.rmSync(path.join(outDir, f));
   const log = (s: string) => { if (!values.json) console.log(s); };
 
   let failures: number;
@@ -155,17 +167,22 @@ async function frames(command: string, id: string, rest: string[], every: string
         return cache.get(g)!;
       };
       const inRange = (g: number) => g >= 0 && g < comp.durationInFrames;
-      const half = Math.max(1, Math.round(comp.fps / 2));
+      const limit = Math.round(comp.fps * 2);
       /**
-       * A problem on moving text is passed over only when it goes away: the text involved is still on screen half a
-       * second earlier or later, without the problem (a slide-in that settles, a transition that ends). One that persists while the text moves (a slow
-       * push-in, a caption that is too small throughout) still counts.
+       * A problem on moving text is judged where that text comes to rest. Follow the text that moved frame by frame,
+       * forward and then backward, up to two seconds each way, until it stops (two frames in a row unchanged): a
+       * slide-in that settles clear, or a title that was clear before it slid out, passes. If it is still there at
+       * rest, or the text never rests within reach (a slow push-in, a marquee), the problem counts.
        */
-      const passes = async (issue: Issue, frame: number) => {
-        for (const g of [frame - half, frame + half]) {
-          if (!inRange(g)) continue;
-          const m = await measureAt(g);
-          if (issue.keys.some((k) => m.runs.some((r) => r.key === k)) && !m.issues.some((i) => sameIssue(i, issue))) return true;
+      const settlesClear = async (issue: Issue, frame: number, movers: string[]) => {
+        for (const dir of [1, -1]) {
+          let prev = await measureAt(frame);
+          for (let g = frame + dir, n = 0; inRange(g) && n < limit; g += dir, n++) {
+            const m = await measureAt(g);
+            if (!movers.some((k) => m.runs.some((r) => r.key === k))) break;
+            if (!moved(movers, prev.runs, m.runs)) return !m.issues.some((i) => sameIssue(i, issue));
+            prev = m;
+          }
         }
         return false;
       };
@@ -188,7 +205,10 @@ async function frames(command: string, id: string, rest: string[], every: string
           const neighbours: FrameMeasure[] = [];
           if (keyed.length) for (const g of [frame - 1, frame + 1]) if (inRange(g)) neighbours.push(await measureAt(g));
           const moving: Issue[] = [];
-          for (const i of keyed) if (neighbours.some((n) => moved(i.keys, m.runs, n.runs)) && (await passes(i, frame))) moving.push(i);
+          for (const i of keyed) {
+            const movers = i.keys.filter((k) => neighbours.some((n) => moved([k], m.runs, n.runs)));
+            if (movers.length && (await settlesClear(i, frame, movers))) moving.push(i);
+          }
           const issues: Issue[] = m.issues.filter((i) => !moving.includes(i));
           failures += issues.length;
           collect(sec);
@@ -210,10 +230,11 @@ async function frames(command: string, id: string, rest: string[], every: string
           paired++;
           const reasons = [];
           if (d.sizeMismatch) reasons.push(`sizes differ: screen ${d.sizeMismatch.screen}, ref ${d.sizeMismatch.ref}`);
+          if (d.partial) reasons.push(d.partial);
           if (d.mismatchPct > config.diff.maxMismatchPct) reasons.push(`over ${config.diff.maxMismatchPct}%`);
           if (reasons.length) failures++;
           fs.writeFileSync(path.join(outDir, `${tag(sec)}-diff.png`), d.sideBySide);
-          out.push({ sec, mismatchPct: d.mismatchPct, width: d.width, height: d.height, hottestRows: d.hottestRows, sizeMismatch: d.sizeMismatch, fail: reasons.length > 0 });
+          out.push({ sec, mismatchPct: d.mismatchPct, width: d.width, height: d.height, hottestRows: d.hottestRows, sizeMismatch: d.sizeMismatch, partial: d.partial, fail: reasons.length > 0 });
           log(`${sec}s  mismatch ${d.mismatchPct}% of ${d.width}x${d.height}${reasons.length ? `  FAIL: ${reasons.join("; ")}` : ""}  worst rows: ${d.hottestRows.map(([r, p]) => `${r}/12 ${p}%`).join(", ")}`);
         }
       }

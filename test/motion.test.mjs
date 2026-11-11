@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { analyse } from "../dist/motion.js";
 
 const cli = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "dist", "cli.js");
-const opts = { cuts: [], frozenSeconds: 2, failOnFrozen: false };
+const opts = { cuts: [], allow: [], frozenSeconds: 2, failOnFrozen: false };
 const W = 160, H = 90;
 const frame = (v) => new Uint8Array(W * H).fill(v);
 const fade = (n, from = 0) => Array.from({ length: n }, (_, i) => frame(from + i));
@@ -53,6 +53,16 @@ test("footage held for three or four frames (10 fps in 30 fps) is motion, not a 
 test("a hard cut between two still shots is still a jump", () => {
   const r = analyse([...hold(30, 40), ...hold(30, 200), ...hold(30, 90)], 30, opts);
   assert.deepEqual(r.jumps.map((j) => j.t), [1, 2]);
+});
+
+test("a flash on a planned cut, or a glitch inside an allowed stretch, is not a pop", () => {
+  const flash = [...hold(30, 60), frame(250), ...hold(30, 60)];
+  assert.deepEqual(analyse(flash, 30, opts).pops.map((p) => p.t), [1]);
+  assert.deepEqual(analyse(flash, 30, { ...opts, cuts: [1] }).pops, []);
+  const glitch = [...hold(30, 60), ...Array.from({ length: 10 }, (_, i) => frame(i % 2 ? 200 : 60)), ...hold(30, 60)];
+  assert.ok(analyse(glitch, 30, opts).pops.length > 0);
+  const allowed = analyse(glitch, 30, { ...opts, allow: [[1, 1.33]] });
+  assert.deepEqual([allowed.pops, allowed.jumps], [[], []]);
 });
 
 test("a hard cut straight into a long wipe is still a jump", () => {
