@@ -2,7 +2,7 @@ import type { Page } from "playwright";
 import type { Config } from "./config.js";
 
 /** The kinds of layout problem remotion-lint reports. */
-export type IssueKind = "clipped" | "too-small" | "outside-safe-area" | "overlap" | "forbidden-word" | "escapes-box" | "under-control";
+export type IssueKind = "clipped" | "too-small" | "outside-safe-area" | "overlap" | "forbidden-word" | "escapes-box" | "under-control" | "low-contrast" | "covered";
 
 /** A box on screen, in CSS px of the composition. */
 export interface Box {
@@ -17,6 +17,8 @@ export interface Issue extends Box {
   kind: IssueKind;
   text: string;
   px?: number;
+  /** For `low-contrast`: the WCAG contrast ratio three quarters of the letters' edges reach. */
+  contrast?: number;
   /** The text runs involved (see {@link TextRun.key}); empty for a forbidden word found on a non-text element. */
   keys: string[];
 }
@@ -30,6 +32,21 @@ export interface TextRun {
   opacity: number;
   /** Every `clip-path` and `mask-image` on the element and its ancestors, with the shape an SVG `url(#id)` points at, so a wipe that changes only its mask still counts as motion. */
   clip: string;
+  /** Its element carries `data-lint-run` with this number until the next measurement, so a screenshot can single it out. */
+  index: number;
+  text: string;
+  px: number;
+  /** Each line box of the run, cut to what is on screen. */
+  lines: Box[];
+  /** Parts of the lines with an unrelated image, icon, video or painted box stacked above the text. */
+  occluders: Box[];
+  /** Pixels say nothing here: the run is over video, which this tool cannot show (see page.ts). */
+  overVideo: boolean;
+  embedded: boolean;
+  /** Its fill is transparent and nothing else draws its glyphs (no background-clip: text, stroke or shadow). */
+  paintless: boolean;
+  /** Pixel kinds switched off for this run by `data-lint-ignore`. */
+  ignore: IssueKind[];
 }
 
 /** What one frame measured. */
@@ -57,7 +74,7 @@ export const measure = ({ minFontPx, safeX, safeY, W, H, overlap, forbidden }: R
   document.head.appendChild(probe);
   try {
     type R = { left: number; top: number; right: number; bottom: number };
-    type Run = { el: Element; key: string; text: string; own: string; px: number; caps: R[]; full: R; vis: R; opacity: number; clip: string; cut: boolean; offFrame: boolean; embedded: boolean; svg: boolean };
+    type Run = { el: Element; key: string; text: string; own: string; px: number; caps: R[]; lines: R[]; full: R; vis: R; opacity: number; clip: string; cut: boolean; offFrame: boolean; embedded: boolean; svg: boolean };
     const clipsOf = (el: Element) => {
       const out: string[] = [];
       for (let e: Element | null = el; e && e !== document.body; e = e.parentElement) {
@@ -278,6 +295,7 @@ export const measure = ({ minFontPx, safeX, safeY, W, H, overlap, forbidden }: R
       return false;
     };
 
+    document.querySelectorAll("[data-lint-run]").forEach((e) => e.removeAttribute("data-lint-run"));
     const runs: Run[] = [];
     const seen = new Set<Element>();
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
@@ -305,7 +323,8 @@ export const measure = ({ minFontPx, safeX, safeY, W, H, overlap, forbidden }: R
       const onScreen = intersect(clip.vis, frame);
       if (area(onScreen) < 1 || covered(el, onScreen) || overlaid(el, onScreen)) continue;
       const own = norm([...el.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE).map((n) => n.textContent).join(""));
-      runs.push({ el, key: keyOf(text, el), text, own, px, caps: linesOf(el, px, 0.75, turned), full, vis: onScreen, opacity: Math.round(opacityOf(el) * 100) / 100, clip: clipsOf(el), cut: clip.cut || offFrame, offFrame, embedded: !!el.closest('[data-lint="embedded"]'), svg });
+      const shown = lines.map((l) => intersect(l, onScreen)).filter((l) => area(l) >= 1);
+      runs.push({ el, key: keyOf(text, el), text, own, px, caps: linesOf(el, px, 0.75, turned), lines: shown, full, vis: onScreen, opacity: Math.round(opacityOf(el) * 100) / 100, clip: clipsOf(el), cut: clip.cut || offFrame, offFrame, embedded: !!el.closest('[data-lint="embedded"]'), svg });
     }
 
     const issues: Issue[] = [];
@@ -428,7 +447,69 @@ export const measure = ({ minFontPx, safeX, safeY, W, H, overlap, forbidden }: R
       }
     }
 
-    return { texts: runs.length, issues, runs: runs.map((t) => ({ key: t.key, full: toBox(t.full), visible: toBox(t.vis), opacity: t.opacity, clip: t.clip })) };
+    // Text from CSS `content` on ::before and ::after has no text node: its literal strings are read from the style.
+    for (const el of document.body.querySelectorAll("*")) {
+      if (skip(el) || hidden(el)) continue;
+      for (const pseudo of ["::before", "::after"]) {
+        const cs = getComputedStyle(el, pseudo);
+        if (!cs.content || cs.content === "none" || cs.content === "normal") continue;
+        const text = norm([...cs.content.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1].replace(/\\(.)/g, "$1")).join(""));
+        if (!/[\p{L}\p{N}]/u.test(text) || cs.display === "none" || cs.visibility === "hidden") continue;
+        const r = intersect(el.getBoundingClientRect(), frame);
+        const px = Math.round(parseFloat(cs.fontSize) * transformOf(el).scale * 10) / 10;
+        if (!el.closest('[data-lint="embedded"]') && px < minFontPx) add("too-small", [el], [], `${pseudo} ${text}`, r, px);
+        if (forbidden.some((f) => new RegExp(f, "i").test(text))) add("forbidden-word", [el], [], text, r);
+      }
+    }
+
+    const replaced = (e: Element) => /^(IMG|VIDEO|CANVAS|IFRAME|OBJECT|EMBED|PICTURE)$/.test(e.tagName) || (e instanceof SVGElement && !(e instanceof SVGTextContentElement) && e.tagName !== "svg");
+    const related = (a: Element, b: Element) => a === b || a.contains(b) || b.contains(a);
+    /** Unrelated things painted above the run's lines, found by hit testing a grid over each line. */
+    const occludersOf = (t: Run): R[] => {
+      const found = new Map<Element, R[]>();
+      const step = Math.max(8, t.px * 0.5);
+      for (const l of t.lines) {
+        for (let x = l.left + step / 2; x < l.right; x += step) {
+          for (const fy of [0.35, 0.65]) {
+            const stack = document.elementsFromPoint(x, l.top + (l.bottom - l.top) * fy);
+            const mine = stack.findIndex((e) => related(e, t.el));
+            for (const e of mine < 0 ? stack : stack.slice(0, mine)) {
+              if (related(e, t.el) || skip(e) || opacityOf(e) < 0.05) continue;
+              const cs = getComputedStyle(e);
+              if (!replaced(e) && !paints(cs) && !(parseFloat(cs.borderTopWidth) > 0)) continue;
+              const list = found.get(e) ?? [];
+              if (!list.includes(l)) list.push(l);
+              found.set(e, list);
+            }
+          }
+        }
+      }
+      const out: R[] = [];
+      for (const [e, ls] of found) for (const l of ls) {
+        const r = intersect(e.getBoundingClientRect(), l);
+        if (area(r) >= 1) out.push(r);
+      }
+      return out;
+    };
+    const videos = [...document.querySelectorAll("video, img")].filter((e) => e.tagName === "VIDEO" || /^https?:\/\/localhost:0\/proxy/.test((e as HTMLImageElement).src)).map((e) => e.getBoundingClientRect());
+    const isClipText = (cs: CSSStyleDeclaration) => cs.backgroundClip === "text" || (cs as unknown as { webkitBackgroundClip: string }).webkitBackgroundClip === "text";
+    const paintless = (el: Element) => {
+      const cs = getComputedStyle(el);
+      if (!transparent((cs as unknown as { webkitTextFillColor: string }).webkitTextFillColor) || cs.textShadow !== "none" || parseFloat((cs as unknown as { webkitTextStrokeWidth: string }).webkitTextStrokeWidth) > 0) return false;
+      for (let e: Element | null = el; e && e !== document.body; e = e.parentElement) if (isClipText(getComputedStyle(e))) return false;
+      return true;
+    };
+    const PIXEL_KINDS = ["low-contrast", "covered"] as const;
+
+    return {
+      texts: runs.length,
+      issues,
+      runs: runs.map((t, i) => ({
+        key: t.key, full: toBox(t.full), visible: toBox(t.vis), opacity: t.opacity, clip: t.clip, index: (t.el.setAttribute("data-lint-run", String(i)), i), text: short(t.text), px: t.px,
+        lines: t.lines.map(toBox), occluders: t.svg ? [] : occludersOf(t).map(toBox), overVideo: videos.some((v) => area(intersect(v, t.vis)) >= 1),
+        embedded: t.embedded, paintless: !t.svg && paintless(t.el), ignore: PIXEL_KINDS.filter((k) => ignored(t.el, k)),
+      })),
+    };
   } finally {
     probe.remove();
   }
@@ -436,7 +517,7 @@ export const measure = ({ minFontPx, safeX, safeY, W, H, overlap, forbidden }: R
 
 const COLOUR: Record<IssueKind, string> = {
   clipped: "#e00000", "forbidden-word": "#b00020", "too-small": "#c77700", "outside-safe-area": "#0077cc",
-  overlap: "#c000a8", "escapes-box": "#d35400", "under-control": "#d35400",
+  overlap: "#c000a8", "escapes-box": "#d35400", "under-control": "#d35400", "low-contrast": "#7a4dd8", covered: "#d35400",
 };
 
 /** Measures the frame currently shown on `page`, with rules already scaled to the composition (see `scaleLayout`). */

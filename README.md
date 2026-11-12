@@ -70,6 +70,8 @@ npx remotion-lint layout <composition> --every 0.5  # sweep the whole compositio
 | `forbidden-word` | any element's text, or an input's value, matches a pattern in `forbidden`. Letters split across spans that sit side by side are joined, letters spaced out one by one ("N i g h t") are read as the word, and the spaces between word spans are kept, so "What to" + "do next" never reads "todo" |
 | `escapes-box` | text sits outside the nearest ancestor that draws a background or border |
 | `under-control` | a small solid shape such as a button or badge is drawn on top of the text (a translucent or blended highlight is not) |
+| `low-contrast` | along a quarter or more of its letters' edges, the text stands out from what is right beside it on screen by less than `minContrast` (default 3, the WCAG ratio for large text). Measured on the rendered pixels, so text over a photo, a gradient or a busy pattern is judged by what is really behind each letter, and an outline or shadow counts as the edge it is |
+| `covered` | part of a line is hidden under an image, icon or box: far fewer of its letters reach the screen there than in the rest of that line |
 
 `minFontPx` is pixels on a 1080p frame and scales with the composition's shorter side: on a 3840x2160 composition
 the minimum is 56 px, on 1280x720 it is about 19 px, and a vertical 1080x1920 video uses it as given. `safeArea` can
@@ -82,7 +84,8 @@ descent, so tight leading down to about 0.7 is not an overlap. An all-caps line 
 `line-height: 0.8` is not a clip, and a tighter one that cuts into the letters is. Text with opacity under 0.5, hidden text, text fully
 outside its `clip-path` shape, and text under a layer nothing can show through are ignored. Only a plain, solid,
 fully opaque colour with no mask, filter, clip-path or blend mode counts as such a layer: a vignette, tint, scrim,
-gradient, image or video never hides the text under it. Forbidden words are searched down to 5% opacity, so a faint
+gradient, image or video never hides the text under it by its CSS alone; the pixel checks below then decide
+whether any of its letters still reach the screen. Forbidden words are searched down to 5% opacity, so a faint
 watermark is still found. Clipping follows CSS: a box only clips what it contains, so an absolutely positioned child
 escapes an `overflow: hidden` parent that is not its containing block.
 
@@ -99,11 +102,20 @@ its scene cuts away, a marquee always cut by its box. Text is followed by what i
 counting up while it slides in is still the same text) and its font size, so the verdict is the same whichever
 seconds you check. Text whose words change, like a typewriter, is judged frame by frame as if it stood still.
 
-**Not covered:** text drawn on a `<canvas>`, in a video or image, or by CSS `::before`/`::after`. SVG `<text>` is
-checked for size, safe area, running off the frame and forbidden words, not for clipping by its own boxes. Text
-hidden only by a `mask-image` is still checked. `under-control` looks for HTML shapes (`div`, `span`, `button`), not
-SVG or image icons. `<OffthreadVideo>` frames are shown blank, with a warning: the text and layout around the video
-are checked, not the video.
+**What the pixels decide.** Each checked frame is also screenshotted around its text three ways: as authored, with
+every glyph hidden, and with every glyph painted solid magenta (outlines and shadows off in both). The difference
+between the last two is where letters reach the screen, whatever the CSS says: text no letter of which shows
+(under an opaque image, masked away, painted transparent) is not counted at all, and none of its other problems are
+reported. A fourth screenshot as authored must match the first; if anything moved in between (a CSS animation, a
+GIF, media still loading), the frame gets a warning and these pixel checks are skipped for it. `low-contrast` and
+`covered` follow moving text like every other check, so a fade-in passes once it is readable. `minContrast: 0`
+switches `low-contrast` off.
+
+**Not covered:** text drawn on a `<canvas>` or baked into a video or image is not read. Text from `::before` and
+`::after` is read from its CSS `content` for `too-small` and `forbidden-word` only. SVG `<text>` is checked for size,
+safe area, running off the frame, forbidden words and contrast, not for clipping by its own boxes. `<OffthreadVideo>`
+frames are shown blank, with a warning: the text and layout around the video are checked, not the video, and text
+over a video is not checked for contrast or covering.
 
 ### `diff`: a component against the real thing
 
@@ -176,7 +188,7 @@ export default {
   entryPoint: "src/index.ts",
   webpackOverride: (c) => enableTailwind(c), // the same override as in remotion.config.ts
   props: { title: "Launch" }, // merged over the composition's default props; --props on the command line wins
-  layout: { minFontPx: 28, safeArea: "5%", overlap: 0.15, forbidden: ["\\blorem\\b", "TODO"] },
+  layout: { minFontPx: 28, safeArea: "5%", overlap: 0.15, forbidden: ["\\blorem\\b", "TODO"], minContrast: 3 },
   diff: { threshold: 0.12, maxMismatchPct: 1, maxBandPct: 2 },
   motion: { cuts: [11.5, 20.4], allow: [[30, 31.5]], frozenSeconds: 2, failOnFrozen: false },
   browserChannel: "", // "chrome" to use your installed Chrome

@@ -127,7 +127,7 @@ async function frames(command: string, id: string, rest: string[], every: string
   process.once("SIGINT", onSignal);
   process.once("SIGTERM", onSignal);
   try {
-    const [{ openComposition }, { lintFrame, screenshotWithMarks, moved }, { diffFrame }] = await Promise.all([import("./page.js"), import("./layout.js"), import("./diff.js")]);
+    const [{ openComposition }, { lintFrame, screenshotWithMarks, moved }, { diffFrame }, { checkPixels, applyPixels }] = await Promise.all([import("./page.js"), import("./layout.js"), import("./diff.js"), import("./pixels.js")]);
     const comp = await openComposition({
       entryPoint: path.resolve(root, config.entryPoint), id, channel: config.browserChannel, props: config.props, webpackOverride: config.webpackOverride,
       onCleanup: (c) => (cleanup = c),
@@ -158,13 +158,34 @@ async function frames(command: string, id: string, rest: string[], every: string
       });
 
       const rules = scaleLayout(config.layout, comp.width, comp.height);
-      const cache = new Map<number, FrameMeasure>();
-      const measureAt = async (g: number) => {
-        if (!cache.has(g)) {
-          await comp.seek(g);
-          cache.set(g, await lintFrame(comp.page, rules, comp.width, comp.height));
+      let shown = -1;
+      const go = async (g: number) => {
+        if (shown !== g) await comp.seek(g);
+        shown = g;
+      };
+      const dom = new Map<number, FrameMeasure>();
+      const full = new Map<number, FrameMeasure>();
+      const unstable = new Set<number>();
+      /** What the DOM says about frame `g`: positions, sizes and clipping. Cheap, so motion is judged with it. */
+      const domAt = async (g: number) => {
+        if (!dom.has(g)) {
+          await go(g);
+          dom.set(g, await lintFrame(comp.page, rules, comp.width, comp.height));
         }
-        return cache.get(g)!;
+        return dom.get(g)!;
+      };
+      /** Frame `g` as the viewer sees it: the DOM measurement checked against screenshots (see pixels.ts). */
+      const measureAt = async (g: number) => {
+        if (!full.has(g)) {
+          await go(g);
+          // Measured again now, so the run numbers the screenshots single out belong to the elements on screen.
+          const m = await lintFrame(comp.page, rules, comp.width, comp.height);
+          dom.set(g, m);
+          const p = await checkPixels(comp.page, m, rules.minContrast, comp.width, comp.height);
+          if (p.unstable) unstable.add(g);
+          full.set(g, applyPixels(m, p));
+        }
+        return full.get(g)!;
       };
       const inRange = (g: number) => g >= 0 && g < comp.durationInFrames;
       const limit = Math.round(comp.fps);
@@ -176,10 +197,11 @@ async function frames(command: string, id: string, rest: string[], every: string
        * shows it for as long as it can be followed (a caption too small through a whole push-in, a marquee always cut).
        */
       const settlesClear = async (issue: Issue, frame: number, movers: string[]) => {
+        const at = PIXEL_KINDS.includes(issue.kind) ? measureAt : domAt;
         const follow = async (dir: number) => {
-          let prev = await measureAt(frame);
+          let prev = await at(frame);
           for (let g = frame + dir, n = 0; inRange(g) && n < limit; g += dir, n++) {
-            const m = await measureAt(g);
+            const m = await at(g);
             if (!movers.some((k) => m.runs.some((r) => r.key === k))) return "gone";
             if (!m.issues.some((i) => sameIssue(i, issue))) return "clear";
             if (!moved(movers, prev.runs, m.runs)) return "stuck";
@@ -208,7 +230,7 @@ async function frames(command: string, id: string, rest: string[], every: string
           const m = await measureAt(frame);
           const keyed = m.issues.filter((i) => i.keys.length);
           const neighbours: FrameMeasure[] = [];
-          if (keyed.length) for (const g of [frame - 1, frame + 1]) if (inRange(g)) neighbours.push(await measureAt(g));
+          if (keyed.length) for (const g of [frame - 1, frame + 1]) if (inRange(g)) neighbours.push(await domAt(g));
           const moving: Issue[] = [];
           for (const i of keyed) {
             const movers = i.keys.filter((k) => neighbours.some((n) => moved([k], m.runs, n.runs)));
@@ -217,15 +239,20 @@ async function frames(command: string, id: string, rest: string[], every: string
           const issues: Issue[] = m.issues.filter((i) => !moving.includes(i));
           failures += issues.length;
           collect(sec);
+          if (unstable.has(frame)) {
+            const message = "the frame changed between screenshots (a CSS animation, a GIF or media still loading), so contrast and covering were not checked";
+            warnings.push({ sec, message });
+            log(`${sec}s  warning: ${message}`);
+          }
           out.push({ sec, texts: m.texts, issues, moving });
           if (issues.length) {
-            await comp.seek(frame);
+            await go(frame);
             await screenshotWithMarks(comp.page, issues, { x: rules.safeX, y: rules.safeY }, path.join(outDir, `${tag(sec)}.png`));
           }
           log(`${sec}s  ${m.texts} text runs  ${issues.length ? issues.map(describe).join(" | ") : "clean"}`);
           for (const i of moving) log(`        moving, not counted: ${describe(i)}`);
         } else {
-          await comp.seek(frame);
+          await go(frame);
           const d = await diffFrame(comp.page, config.diff.threshold);
           collect(sec);
           if ("skipped" in d) {
@@ -259,8 +286,10 @@ async function frames(command: string, id: string, rest: string[], every: string
   }
 }
 
+const PIXEL_KINDS: string[] = ["low-contrast", "covered"];
+
 function describe(i: Issue): string {
-  return `${i.kind}: "${i.text}"${i.px ? ` (${i.px}px)` : ""}`;
+  return `${i.kind}: "${i.text}"${i.px ? ` (${i.px}px${i.contrast ? `, ${i.contrast}:1` : ""})` : ""}`;
 }
 
 main().then(

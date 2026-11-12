@@ -91,6 +91,17 @@ test("where a guess would pass a real problem, the problem is reported", () => {
   assert.equal(code, 1);
 });
 
+test("pixels decide what is seen: outlines, gradients, emoji and SVG pass; grey on grey, busy pictures, covering icons and ::before text fail; masked, transparent and image-covered text is skipped", () => {
+  const expected = ["clean", "low-contrast", "clean", "clean", "clean", "clean", "too-small", "covered", "clean", "moving:low-contrast", "low-contrast", "clean", "clean", "too-small", "clean", "clean"];
+  const secs = expected.map((_, i) => String(i + (i === 9 ? 0.2 : 0.5)));
+  const { code, report } = run("layout", "Pixels", ...secs);
+  expectFrames(report, expected);
+  const seen = report.frames.map((f) => f.texts);
+  for (const i of [0, 1, 2, 3, 4, 6, 7, 9, 10, 11, 12, 14]) assert.equal(seen[i], 1, `second ${secs[i]}: the text is on screen, so it must be counted`);
+  for (const i of [5, 8, 15]) assert.equal(seen[i], 0, `second ${secs[i]}: no one can see this text`);
+  assert.equal(code, 1);
+});
+
 test("problems that stay put fail, even in one-second scenes, rotated, off the frame, or on a counter whose digits change", () => {
   const { code, report } = run("layout", "Static", "0.5", "0.95", "1.5", "2.5", "3.5", "4.5", "5.5");
   expectFrames(report, ["clipped", "clipped", "clipped", "clipped", "clean", "clipped", "clipped"]);

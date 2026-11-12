@@ -23,6 +23,8 @@ export interface Config {
     overlap: number;
     /** Regular expressions (case-insensitive) that must never appear on screen. */
     forbidden: string[];
+    /** WCAG contrast ratio text must reach against what is right behind it on screen, along most of its letters' edges. 0 switches the check off. */
+    minContrast: number;
   };
   diff: {
     /** pixelmatch colour threshold, 0..1. */
@@ -59,7 +61,7 @@ export const defineConfig = (c: UserConfig): UserConfig => c;
 export const defaults: Config = {
   entryPoint: "src/index.ts",
   props: {},
-  layout: { minFontPx: 28, safeArea: "5%", overlap: 0.15, forbidden: [] },
+  layout: { minFontPx: 28, safeArea: "5%", overlap: 0.15, forbidden: [], minContrast: 3 },
   diff: { threshold: 0.12, maxMismatchPct: 1, maxBandPct: 2 },
   motion: { cuts: [], allow: [], frozenSeconds: 2, failOnFrozen: false },
   browserChannel: "",
@@ -103,7 +105,7 @@ const SCHEMA: Record<string, Kind | Record<string, Kind>> = {
   webpackOverride: "function",
   props: "object",
   browserChannel: "string",
-  layout: { minFontPx: "number", safeArea: "margin", overlap: "number", forbidden: "string[]" },
+  layout: { minFontPx: "number", safeArea: "margin", overlap: "number", forbidden: "string[]", minContrast: "number" },
   diff: { threshold: "number", maxMismatchPct: "number", maxBandPct: "number" },
   motion: { cuts: "number[]", allow: "ranges", frozenSeconds: "number", failOnFrozen: "boolean" },
 };
@@ -142,6 +144,7 @@ export function validate(user: unknown, name = "config"): void {
   range("layout.minFontPx", u.layout?.minFontPx, 0);
   for (const v of [u.layout?.safeArea ?? []].flat()) range("layout.safeArea", typeof v === "string" ? parseFloat(v) : v, 0, typeof v === "string" ? 50 : Infinity);
   range("layout.overlap", u.layout?.overlap, 0, 1);
+  range("layout.minContrast", u.layout?.minContrast, 0, 21);
   range("diff.threshold", u.diff?.threshold, 0, 1);
   range("diff.maxMismatchPct", u.diff?.maxMismatchPct, 0, 100);
   range("diff.maxBandPct", u.diff?.maxBandPct, 0, 100);

@@ -169,15 +169,15 @@ export const ORDINARY: Array<[number, string, React.ReactNode]> = [
   )],
   [12, "a giant pale chapter number behind a title, marked as intended", (
     <>
-      <div data-lint-ignore="overlap" style={{ ...font, ...at(200, 120), fontSize: 400, fontWeight: 900, color: "#eeeeee" }}>01</div>
+      <div data-lint-ignore="overlap low-contrast" style={{ ...font, ...at(200, 120), fontSize: 400, fontWeight: 900, color: "#eeeeee" }}>01</div>
       <div style={{ ...font, ...at(260, 300), fontSize: 72 }}>Chapter one</div>
     </>
   )],
   [13, "a retro offset copy of a headline", (
-    <>
+    <AbsoluteFill style={{ background: "#111" }}>
       <div style={{ ...font, ...at(206, 206), fontSize: 120, fontWeight: 900, color: "#f0f" }}>RETRO</div>
       <div style={{ ...font, ...at(200, 200), fontSize: 120, fontWeight: 900, color: "#0cf" }}>RETRO</div>
-    </>
+    </AbsoluteFill>
   )],
   [14, "a marker highlight drawn over a word, multiplied", (
     <>
@@ -422,7 +422,7 @@ const smallCaption = <div style={{ ...font, ...at(200, 500), fontSize: 14 }}>Fin
 /** Cases where a guess would have passed a real problem. Each second must report exactly its kind. */
 export const CAUTIOUS: Array<[number, string, React.ReactNode]> = [
   [0, "overlap", <AbsoluteFill style={{ background: "linear-gradient(#000, #223)" }}>{pair({ color: "#fff" })}</AbsoluteFill>],
-  [1, "overlap", pair({ fontSize: 96, fontWeight: 900, color: "transparent", backgroundImage: "linear-gradient(90deg, #f0f, #0cf)", WebkitBackgroundClip: "text", backgroundClip: "text" })],
+  [1, "overlap", <AbsoluteFill style={{ background: "#111" }}>{pair({ fontSize: 96, fontWeight: 900, color: "transparent", backgroundImage: "linear-gradient(90deg, #f0f, #0cf)", WebkitBackgroundClip: "text", backgroundClip: "text" })}</AbsoluteFill>],
   [2, "too-small", <>{smallCaption}<AbsoluteFill style={{ background: "#000", maskImage: "linear-gradient(to top, black, transparent 40%)" }} /></>],
   [3, "too-small", <>{smallCaption}<AbsoluteFill style={{ background: "#000", filter: "opacity(0.2)" }} /></>],
   [4, "too-small", <>{smallCaption}<OffthreadVideo src={staticFile("overlay.mp4")} style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }} /></>],
@@ -467,6 +467,54 @@ export const CAUTIOUS: Array<[number, string, React.ReactNode]> = [
   [17, "too-small", <DupKey />],
 ];
 
+const svgUri = (body: string) => `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">${body}</svg>`)}`;
+const solidImage = svgUri('<rect width="100" height="100" fill="#3a6"/>');
+const clearImage = svgUri("");
+const stripes = "repeating-linear-gradient(90deg, #fff 0 40px, #000 40px 80px)";
+const bigWhite: React.CSSProperties = { ...font, fontSize: 64, color: "#fff", whiteSpace: "nowrap" };
+
+const FadeOnGrey: React.FC = () => {
+  const f = useCurrentFrame();
+  return (
+    <AbsoluteFill style={{ background: "#888" }}>
+      <div style={{ ...bigWhite, ...at(200, 400), opacity: interpolate(f, [0, 20], [0.5, 1], { extrapolateRight: "clamp" }) }}>Fading in on grey</div>
+    </AbsoluteFill>
+  );
+};
+
+/** What only the pixels can tell: is the text there to see, and does it stand out. Each second must report exactly its kind. */
+export const PIXELS: Array<[number, string, React.ReactNode]> = [
+  [0, "clean", <div style={{ ...bigWhite, ...at(200, 400), WebkitTextStroke: "4px #000", paintOrder: "stroke fill" }}>Outlined caption on white</div>],
+  [1, "low-contrast", <AbsoluteFill style={{ background: "#777" }}><div style={{ ...bigWhite, ...at(200, 400), color: "#888" }}>Grey on grey</div></AbsoluteFill>],
+  [2, "clean", (
+    <AbsoluteFill style={{ background: "#111" }}>
+      <div style={{ ...bigWhite, ...at(200, 400), fontWeight: 900, color: "transparent", backgroundImage: "linear-gradient(90deg, #f0f, #0cf)", WebkitBackgroundClip: "text", backgroundClip: "text" }}>Gradient title</div>
+    </AbsoluteFill>
+  )],
+  [3, "clean", <div style={{ ...font, ...at(200, 400) }}>{"\u{1F389} Launch day"}</div>],
+  [4, "clean", (
+    <svg width={1920} height={1080} style={{ position: "absolute", inset: 0 }}>
+      <rect width={1920} height={1080} fill="#111" />
+      <text x={200} y={460} fill="#fff" fontSize={64} fontFamily="Helvetica, Arial, sans-serif">SVG title</text>
+    </svg>
+  )],
+  [5, "clean", <>{smallCaption}<img src={solidImage} style={{ ...at(150, 470), width: 600, height: 100 }} /></>],
+  [6, "too-small", <>{smallCaption}<img src={clearImage} style={{ ...at(150, 470), width: 600, height: 100 }} /></>],
+  [7, "covered", <><div style={{ ...font, ...at(200, 400) }}>An icon sits on these words</div><img src={solidImage} style={{ ...at(420, 395), width: 70, height: 70 }} /></>],
+  [8, "clean", <div style={{ ...font, ...at(200, 500), fontSize: 14, maskImage: "linear-gradient(transparent, transparent)" }}>Fine print masked away</div>],
+  [9, "moving:low-contrast", <FadeOnGrey />],
+  [10, "low-contrast", <AbsoluteFill style={{ background: stripes }}><div style={{ ...bigWhite, ...at(200, 400) }}>White over a busy picture</div></AbsoluteFill>],
+  [11, "clean", (
+    <AbsoluteFill style={{ background: stripes }}>
+      <div style={{ ...bigWhite, ...at(200, 400), background: "rgba(0,0,0,0.6)", padding: "8px 24px" }}>White on a scrim</div>
+    </AbsoluteFill>
+  )],
+  [12, "clean", <div style={{ ...bigWhite, ...at(200, 400), mixBlendMode: "difference" }}>Difference blend on white</div>],
+  [13, "too-small", <><style>{".sale::before { content: 'SALE'; font: 14px Helvetica, Arial, sans-serif; color: #111; }"}</style><div className="sale" style={at(200, 400)} /></>],
+  [14, "clean", <div style={{ ...bigWhite, ...at(200, 400), textShadow: "0 0 2px #000, 0 2px 8px rgba(0,0,0,0.9)" }}>Shadowed caption on white</div>],
+  [15, "clean", <div style={{ ...font, ...at(200, 500), fontSize: 14, color: "transparent" }}>Transparent fine print</div>],
+];
+
 /** Problems that stay put. Each must fail even inside short scenes. */
 export const STATIC: Array<[number, string, React.ReactNode]> = [
   [0, "clipped", <div style={{ ...font, ...at(200, 200), width: 420, overflow: "hidden", whiteSpace: "nowrap" }}>A headline truncated for the whole scene</div>],
@@ -504,6 +552,7 @@ export const Root: React.FC = () => (
     )} durationInFrames={30} fps={30} width={1920} height={1080} />
     <Composition id="Overlays" component={() => <Strip items={OVERLAYS} />} durationInFrames={OVERLAYS.length * 30} fps={30} width={1920} height={1080} />
     <Composition id="Cautious" component={() => <Strip items={CAUTIOUS} />} durationInFrames={CAUTIOUS.length * 30} fps={30} width={1920} height={1080} />
+    <Composition id="Pixels" component={() => <Strip items={PIXELS} />} durationInFrames={PIXELS.length * 30} fps={30} width={1920} height={1080} />
     <Composition id="Drift" component={() => <Strip items={DRIFT} seconds={3} />} durationInFrames={DRIFT.length * 90} fps={30} width={1920} height={1080} />
     <Composition id="DiffNumber" component={() => (
       <AbsoluteFill style={{ background: "#fff", flexDirection: "row", alignItems: "flex-start", gap: 100, padding: 200 }}>
