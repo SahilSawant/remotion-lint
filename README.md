@@ -233,8 +233,7 @@ the file.
 ## Background
 
 This started as the QA gate for a product launch film built in Remotion, where every scene was checked by script
-before anyone watched it. Built with [Claude Code](https://claude.com/claude-code). Thanks to
-[Magicweave](https://magicweave.xyz), where it was first used.
+before anyone watched it. Thanks to [Magicweave](https://magicweave.xyz), where it was first used.
 
 ## License
 

@@ -15,7 +15,7 @@ type Mode = "hide" | "magenta" | null;
 
 /**
  * Runs inside the page: paints every glyph as authored (null), hidden, or solid magenta, without touching layout or
- * React. Outlines and shadows go in both other modes, so the difference between them is the glyphs alone.
+ * React. Outlines and shadows are switched off in both other modes, so the difference between them is the glyphs alone.
  */
 const paintText = ([mode, target]: [Mode, number | null]) => {
   document.querySelectorAll("style[data-lint-paint]").forEach((n) => n.remove());

@@ -131,11 +131,11 @@ class Scanner {
 
 /**
  * Looks, tile by tile, for one odd step in otherwise even motion. Around change `i`, six changes each side (skipping
- * the one right after it, which is the catch-up when a frame was repeated) must be
- * real motion (over 2 grey levels) within 0.7x-1.4x of their median `m`, at the same speed on both sides (within a
- * quarter), allowing one held frame per side so footage at another frame rate still counts as even. Then change `i` is a repeat when it is under 0.15 m, or a drop when it is
- * over 1.5 m and as big as the two-frame changes around it. Repeats or drops at a steady spacing (at least three, the
- * same number of frames apart give or take one) are footage at another frame rate, reported once as cadence.
+ * the one right after it, which is the catch-up when a frame was repeated) must be real motion (over 2 grey levels)
+ * within 0.7x-1.4x of their median `m`, at the same speed on both sides (within a quarter), allowing one held frame per
+ * side so footage at another frame rate still counts as even. Then change `i` is a repeat when it is under 0.15 m, or a
+ * drop when it is over 1.5 m and as big as the two-frame changes around it. Repeats or drops at a steady spacing (at
+ * least three, the same number of frames apart give or take one) are footage at another frame rate, reported once as cadence.
  */
 function findStutters(one: Float32Array[], two: Array<Float32Array | undefined>, fps: number, excused: (t: number) => boolean): Pick<MotionReport, "stutters" | "cadence"> {
   const n = one.length;

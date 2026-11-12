@@ -1,7 +1,7 @@
 {
   "name": "remotion-lint",
   "version": "0.1.0",
-  "description": "A layout linter for Remotion videos: opens the real bundle in a browser, measures every frame you ask for, and fails CI on clipped, tiny, overlapping or off-safe-area text, banned words, drift from a reference screen, and motion glitches.",
+  "description": "A linter for Remotion videos: opens the real bundle in a browser, checks every frame you ask for, and fails CI on clipped, tiny, overlapping, low-contrast or covered text, banned words, drift from a reference screen, and stutters or glitches in the rendered file.",
   "license": "MIT",
   "author": "Sahil Sawant (https://github.com/SahilSawant)",
   "repository": {
@@ -61,5 +61,8 @@
     "react-dom": "19.1.0",
     "remotion": "4.0.529",
     "typescript": "^5.8.0"
+  },
+  "overrides": {
+    "zod@4.5.4": "4.6.7"
   }
 }
