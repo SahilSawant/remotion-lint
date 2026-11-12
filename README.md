@@ -113,9 +113,15 @@ switches `low-contrast` off.
 
 **Not covered:** text drawn on a `<canvas>` or baked into a video or image is not read. Text from `::before` and
 `::after` is read from its CSS `content` for `too-small` and `forbidden-word` only. SVG `<text>` is checked for size,
-safe area, running off the frame, forbidden words and contrast, not for clipping by its own boxes. `<OffthreadVideo>`
-frames are shown blank, with a warning: the text and layout around the video are checked, not the video, and text
-over a video is not checked for contrast or covering.
+safe area, running off the frame, forbidden words and contrast, not for clipping by its own boxes. A plain `<video>`
+element (Remotion's `<Video>`) is not trusted to show the right frame in a headless browser, so text over it is not
+checked for contrast or covering.
+
+**Video.** `<OffthreadVideo>` shows its real frames: like Remotion's renderer, remotion-lint asks ffmpeg for the frame
+at that moment (the last frame once the clip has ended, with transparency for `transparent` VP8/VP9 video), so text
+over footage is judged against what is behind it then. This needs `ffmpeg` and `ffprobe` (see `motion` below). Without
+them, for a file not served with the project (`staticFile`), or for HDR footage (which would show washed out without
+tone mapping), the frame is shown blank with a warning, and text over it is not checked for contrast or covering.
 
 ### `diff`: a component against the real thing
 

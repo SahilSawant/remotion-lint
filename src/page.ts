@@ -1,6 +1,7 @@
 import { bundle, type WebpackOverrideFn } from "@remotion/bundler";
 import { chromium, type Browser, type Page } from "playwright";
 import { PNG } from "pngjs";
+import { videoFrames } from "./video.js";
 import fs from "node:fs";
 import http from "node:http";
 import { createRequire } from "node:module";
@@ -186,14 +187,11 @@ export async function openComposition({ entryPoint, id, channel, props, webpackO
         onError = undefined;
       }
     };
-    // <OffthreadVideo> asks the renderer's frame server for each frame. There is none here, so it gets a blank frame.
+    // <OffthreadVideo> asks the renderer's frame server for each frame. This answers with the real frame from ffmpeg, or a
+    // 1x1 blank one when it cannot, which layout.ts recognises as video it must not judge by its pixels.
     const blank = PNG.sync.write(new PNG({ width: 1, height: 1 }));
-    let offthread = false;
-    await page.route(/^http:\/\/localhost:0\/proxy/, (route) => {
-      if (!offthread) warnings.push("<OffthreadVideo> frames are shown blank: remotion-lint checks the text and layout around them, not the video");
-      offthread = true;
-      return route.fulfill({ status: 200, contentType: "image/png", body: blank });
-    });
+    const frameOf = videoFrames(dir, base, (m) => warnings.push(m));
+    await page.route(/^http:\/\/localhost:0\/proxy/, async (route) => route.fulfill({ status: 200, contentType: "image/png", body: (await frameOf(route.request().url())) ?? blank }));
     await loading(page.goto(`${base}/index.html`));
     await loading(page.waitForFunction(() => typeof (window as any).remotion_setBundleMode === "function"));
     await loading(page.evaluate(() => (window as any).remotion_setBundleMode({ type: "evaluation" })));

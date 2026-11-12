@@ -40,7 +40,7 @@ export interface TextRun {
   lines: Box[];
   /** Parts of the lines with an unrelated image, icon, video or painted box stacked above the text. */
   occluders: Box[];
-  /** Pixels say nothing here: the run is over video, which this tool cannot show (see page.ts). */
+  /** Pixels say nothing here: the run is over a `<video>`, or an `<OffthreadVideo>` whose frames could not be extracted (see video.ts). */
   overVideo: boolean;
   embedded: boolean;
   /** Its fill is transparent and nothing else draws its glyphs (no background-clip: text, stroke or shadow). */
@@ -491,7 +491,10 @@ export const measure = ({ minFontPx, safeX, safeY, W, H, overlap, forbidden }: R
       }
       return out;
     };
-    const videos = [...document.querySelectorAll("video, img")].filter((e) => e.tagName === "VIDEO" || /^https?:\/\/localhost:0\/proxy/.test((e as HTMLImageElement).src)).map((e) => e.getBoundingClientRect());
+    // A <video> element, or an <OffthreadVideo> frame served blank (1x1) because it could not be extracted (see video.ts).
+    // Newer Remotion loads the frame through a blob: URL, so the blank frame is known by its size, not its address.
+    const blankVideo = (e: Element) => e.tagName === "VIDEO" || ((e as HTMLImageElement).complete && (e as HTMLImageElement).naturalWidth === 1 && (e as HTMLImageElement).naturalHeight === 1);
+    const videos = [...document.querySelectorAll("video, img")].filter(blankVideo).map((e) => e.getBoundingClientRect());
     const isClipText = (cs: CSSStyleDeclaration) => cs.backgroundClip === "text" || (cs as unknown as { webkitBackgroundClip: string }).webkitBackgroundClip === "text";
     const paintless = (el: Element) => {
       const cs = getComputedStyle(el);

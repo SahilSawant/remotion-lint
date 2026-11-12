@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
-import path from "node:path";
 import type { Config } from "./config.js";
+import { HINT, tools } from "./ffmpeg.js";
 
 /** What the motion check found in a rendered video. */
 export interface MotionReport {
@@ -15,14 +15,6 @@ export interface MotionReport {
 }
 
 const W = 160, H = 90, SIZE = W * H;
-
-function tools() {
-  const ffmpeg = process.env.REMOTION_LINT_FFMPEG || "ffmpeg";
-  const ffprobe = process.env.REMOTION_LINT_FFPROBE || path.join(path.dirname(ffmpeg), path.basename(ffmpeg).replace(/ffmpeg/i, "ffprobe"));
-  return { ffmpeg, ffprobe: ffmpeg.includes(path.sep) || process.env.REMOTION_LINT_FFPROBE ? ffprobe : "ffprobe" };
-}
-
-const HINT = "install ffmpeg, or point REMOTION_LINT_FFMPEG and REMOTION_LINT_FFPROBE at the binaries";
 
 function probeFps(video: string, ffprobe: string): number {
   const r = spawnSync(ffprobe, ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate", "-of", "csv=p=0", video], { encoding: "utf8" });

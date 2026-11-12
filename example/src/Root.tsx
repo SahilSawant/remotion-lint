@@ -515,6 +515,17 @@ export const PIXELS: Array<[number, string, React.ReactNode]> = [
   [15, "clean", <div style={{ ...font, ...at(200, 500), fontSize: 14, color: "transparent" }}>Transparent fine print</div>],
 ];
 
+/**
+ * White text over a 2 s clip: white for a second, then near black, then (at 2 s and later) its last frame. On a white
+ * page, so a blank frame would leave the text white on white.
+ */
+const OverVideo: React.FC<{ src: string; transparent?: boolean; color?: string }> = ({ src, transparent, color = "#fff" }) => (
+  <AbsoluteFill style={{ background: "#fff" }}>
+    <OffthreadVideo src={staticFile(src)} transparent={transparent} style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }} />
+    <div style={{ ...font, ...at(200, 400), fontSize: 64, color }}>Words over the footage</div>
+  </AbsoluteFill>
+);
+
 /** Problems that stay put. Each must fail even inside short scenes. */
 export const STATIC: Array<[number, string, React.ReactNode]> = [
   [0, "clipped", <div style={{ ...font, ...at(200, 200), width: 420, overflow: "hidden", whiteSpace: "nowrap" }}>A headline truncated for the whole scene</div>],
@@ -553,6 +564,9 @@ export const Root: React.FC = () => (
     <Composition id="Overlays" component={() => <Strip items={OVERLAYS} />} durationInFrames={OVERLAYS.length * 30} fps={30} width={1920} height={1080} />
     <Composition id="Cautious" component={() => <Strip items={CAUTIOUS} />} durationInFrames={CAUTIOUS.length * 30} fps={30} width={1920} height={1080} />
     <Composition id="Pixels" component={() => <Strip items={PIXELS} />} durationInFrames={PIXELS.length * 30} fps={30} width={1920} height={1080} />
+    <Composition id="VideoFlash" component={() => <OverVideo src="flash.mp4" />} durationInFrames={90} fps={30} width={1920} height={1080} />
+    <Composition id="VideoAlpha" component={() => <OverVideo src="alpha.webm" transparent color="#111" />} durationInFrames={30} fps={30} width={1920} height={1080} />
+    <Composition id="VideoHdr" component={() => <OverVideo src="hdr.mp4" />} durationInFrames={30} fps={30} width={1920} height={1080} />
     <Composition id="Drift" component={() => <Strip items={DRIFT} seconds={3} />} durationInFrames={DRIFT.length * 90} fps={30} width={1920} height={1080} />
     <Composition id="DiffNumber" component={() => (
       <AbsoluteFill style={{ background: "#fff", flexDirection: "row", alignItems: "flex-start", gap: 100, padding: 200 }}>

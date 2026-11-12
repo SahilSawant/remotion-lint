@@ -102,6 +102,24 @@ test("pixels decide what is seen: outlines, gradients, emoji and SVG pass; grey 
   assert.equal(code, 1);
 });
 
+test("<OffthreadVideo> shows its real frames, so text over footage is judged by what is behind it at that moment", () => {
+  const { code, report } = run("layout", "VideoFlash", "0.5", "1.5", "2.5");
+  expectFrames(report, ["low-contrast", "clean", "clean"]);
+  assert.deepEqual(report.warnings, []);
+  assert.equal(code, 1);
+  assert.equal(run("layout", "VideoAlpha", "0.5").code, 0, "a transparent video shows the page through it, not black");
+});
+
+test("video that cannot be shown truly stays blank, with a warning, and the text over it is not judged by its pixels", () => {
+  const hdr = run("layout", "VideoHdr", "0.5");
+  assert.equal(hdr.code, 0);
+  assert.match(JSON.stringify(hdr.report.warnings), /hdr\.mp4 are shown blank: it is HDR/);
+  const out = tmp("remotion-lint-");
+  const r = spawnSync(process.execPath, [cli, "layout", "VideoFlash", "0.5", "--out", out, "--json"], { cwd: example, encoding: "utf8", timeout: 300_000, env: { ...process.env, REMOTION_LINT_FFMPEG: "/nonexistent/ffmpeg", REMOTION_LINT_FFPROBE: "/nonexistent/ffprobe" } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(JSON.stringify(JSON.parse(r.stdout).warnings), /ffmpeg was not found/);
+});
+
 test("problems that stay put fail, even in one-second scenes, rotated, off the frame, or on a counter whose digits change", () => {
   const { code, report } = run("layout", "Static", "0.5", "0.95", "1.5", "2.5", "3.5", "4.5", "5.5");
   expectFrames(report, ["clipped", "clipped", "clipped", "clipped", "clean", "clipped", "clipped"]);
