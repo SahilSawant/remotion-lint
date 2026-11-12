@@ -207,6 +207,18 @@ test("an entry that throws while loading fails at once with its own message", ()
   assert.ok(Date.now() - started < 25_000, `took ${Date.now() - started} ms`);
 });
 
+test("a broken link in public/ is named, not reported as a bare ENOENT", () => {
+  const dir = tmp("remotion-lint-public-");
+  for (const f of ["node_modules", "src", "package.json"]) fs.symlinkSync(path.join(example, f), path.join(dir, f));
+  fs.mkdirSync(path.join(dir, "public"));
+  fs.symlinkSync("../missing/vo", path.join(dir, "public", "vo"));
+  fs.writeFileSync(path.join(dir, "c.json"), JSON.stringify({ entryPoint: "src/index.ts" }));
+  const r = spawnSync(process.execPath, [cli, "layout", "Clean", "0.5", "--config", "c.json"], { cwd: dir, encoding: "utf8", timeout: 300_000 });
+  assert.equal(r.status, 2, r.stderr);
+  assert.match(r.stderr, /public\/vo is a link to \.\.\/missing\/vo, which does not exist/);
+  assert.doesNotMatch(r.stderr, /realpath/);
+});
+
 test("--version prints the version, and old screenshots are cleared from --out", () => {
   assert.match(raw("--version").stdout, /^\d+\.\d+\.\d+\n$/);
   const { out } = run("layout", "Planted", "2.5");

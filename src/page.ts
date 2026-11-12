@@ -148,7 +148,11 @@ export async function openComposition({ entryPoint, id, channel, props, webpackO
   onCleanup?.(cleanup);
   try {
     browser = await launch(channel);
-    await bundle({ entryPoint, outDir: dir, webpackOverride: webpackOverride ?? ((c) => c) });
+    await bundle({ entryPoint, outDir: dir, webpackOverride: webpackOverride ?? ((c) => c) }).catch((e: NodeJS.ErrnoException) => {
+      if (e?.code !== "ENOENT" || !e.path) throw e;
+      const link = fs.lstatSync(e.path, { throwIfNoEntry: false })?.isSymbolicLink();
+      throw new Error(`could not bundle: ${path.relative(process.cwd(), e.path) || e.path} ${link ? `is a link to ${fs.readlinkSync(e.path)}, which does not exist` : "does not exist"}. Remotion copies public/ into the bundle, so every file and link in it has to resolve.`);
+    });
     server = await serve(dir);
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     const page = await browser.newPage({ deviceScaleFactor: 1 });
