@@ -111,8 +111,10 @@ async function motion(video: string, config: Config, log: (s: string) => void) {
   for (const j of m.jumps) log(`  jump   ${j.t}s  change ${j.diff}, against ${j.around} nearby`);
   for (const p of m.pops) log(`  pop    ${p.t}s  one frame differs by ${p.diff}`);
   for (const [a, b] of m.frozen) log(`  frozen ${a}s -> ${b}s${config.motion.failOnFrozen ? "" : "  (not counted)"}`);
+  for (const st of m.stutters) log(`  ${st.kind === "repeat" ? "repeat" : "drop  "} ${st.t}s  ${st.kind === "repeat" ? "a frame shown twice" : "a frame skipped"} in steady motion`);
+  for (const c of m.cadence) log(`  cadence ${c.from}s -> ${c.to}s  a frame ${c.kind === "repeat" ? "repeated" : "dropped"} every ${c.every}: footage at another frame rate  (not counted)`);
   if (m.jumps.length && !config.motion.cuts.length) log(`  (every hard cut is a jump until it is listed: --cuts ${m.jumps.map((j) => j.t).join(",")})`);
-  return { failures: m.jumps.length + m.pops.length + (config.motion.failOnFrozen ? m.frozen.length : 0), report: m };
+  return { failures: m.jumps.length + m.pops.length + m.stutters.length + (config.motion.failOnFrozen ? m.frozen.length : 0), report: m };
 }
 
 const sameIssue = (a: Issue, b: Issue) => a.kind === b.kind && a.keys.length === b.keys.length && a.keys.every((k) => b.keys.includes(k));

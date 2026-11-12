@@ -164,9 +164,11 @@ inside a stretch you meant (a glitch effect, a strobe).
 | jump | one frame-to-frame change far bigger than the two nearest changes on each side (looking up to 8 frames away), not near a planned cut. A fast wipe changes the picture every frame, and footage animated on twos, threes or fours (10 fps in a 30 fps file) every few frames, so they are motion, not jumps. A cut straight into motion that is nearly as big as the cut itself can be missed. Changes are measured on the whole frame at 160x90, so a glitch in a small object, or a flash that lasts two frames, may not show |
 | pop | one frame that differs from both neighbours while they match each other (counted once, not also as jumps) |
 | frozen | nothing changes for longer than `frozenSeconds` (reported, not failed, unless `failOnFrozen`) |
+| repeat / drop | a stutter in steady motion: one frame shown twice (and the next step catching up), or one skipped (a single step as big as two). Checked in each of 12 parts of the picture, so footage inside the frame counts. Only motion that is clearly even for six frames on each side, at the same speed before and after, is judged: a move that eases, speeds up or slows down never is |
+| cadence | repeats or drops at a steady rhythm, such as 24 fps footage in a 30 fps video (a frame repeated every 5): footage at another frame rate, reported once per stretch, not failed |
 
-Not covered: a dropped or repeated frame in a steady pan changes the picture as much as its neighbours do, so it is
-neither a jump nor a pop.
+Not covered: a hitch in motion that is uneven anyway (eased, accelerating, or small and jittery like a cursor), or a
+dropped frame where the motion is too fast for a one-frame step and a two-frame step to differ at 160x90.
 
 Frames are streamed from ffmpeg at 160x90 greyscale, so memory stays flat on long 4K files. Needs `ffmpeg` and
 `ffprobe` on your PATH, or set `REMOTION_LINT_FFMPEG` and `REMOTION_LINT_FFPROBE` to full builds elsewhere. The

@@ -31,6 +31,68 @@ const wipe = (n, from, to) =>
     return f;
   });
 
+/** A smooth pattern, shifted `dx` px right and scaled by `zoom`: what a camera pan or push-in does to the picture. */
+const scene = (dx, zoom = 1) => {
+  const f = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const u = (x - W / 2) / zoom + W / 2 - dx, v = (y - H / 2) / zoom + H / 2;
+    f[y * W + x] = 128 + 50 * Math.sin(u / 7) + 40 * Math.sin(v / 5 + u / 11);
+  }
+  return f;
+};
+/** A pan at 1.5 px a frame, with `edit` changing which moment each frame shows. */
+const pan = (n, edit = (i) => i) => Array.from({ length: n }, (_, i) => scene(1.5 * edit(i)));
+const ease = (p) => (p < 0.5 ? 2 * p * p : 1 - 2 * (1 - p) * (1 - p));
+
+test("a steady, eased, zooming or on-twos pan has no stutter", () => {
+  const cases = {
+    steady: pan(90),
+    eased: Array.from({ length: 90 }, (_, i) => scene(80 * ease(i / 89))),
+    zoom: Array.from({ length: 90 }, (_, i) => scene(0, 1 + i * 0.006)),
+    "on twos": pan(90, (i) => i - (i % 2)),
+  };
+  for (const [name, f] of Object.entries(cases)) {
+    const r = analyse(f, 30, opts);
+    assert.deepEqual([r.stutters, r.cadence, r.jumps, r.pops], [[], [], [], []], name);
+  }
+});
+
+test("one frame dropped or shown twice in a steady pan is a stutter", () => {
+  const drop = analyse(pan(60, (i) => (i >= 30 ? i + 1 : i)), 30, opts);
+  assert.deepEqual(drop.stutters, [{ t: 1, kind: "drop" }]);
+  const repeat = analyse(pan(60, (i) => (i === 30 ? 29 : i)), 30, opts);
+  assert.deepEqual(repeat.stutters, [{ t: 1, kind: "repeat" }]);
+  assert.equal(analyse(pan(60, (i) => (i === 30 ? 29 : i)), 30, { ...opts, cuts: [1] }).stutters.length, 0, "unless a cut is planned there");
+});
+
+test("24 fps footage in a 30 fps video repeats a frame every 5: reported once as cadence, not as stutters", () => {
+  const r = analyse(pan(90, (i) => Math.floor((i * 24) / 30) * 1.25), 30, opts);
+  assert.deepEqual(r.stutters, []);
+  assert.equal(r.cadence.length, 1);
+  assert.equal(r.cadence[0].kind, "repeat");
+  assert.equal(r.cadence[0].every, 5);
+});
+
+test("a stutter inside footage that fills only part of the frame is found", () => {
+  const frames = pan(60, (i) => (i === 30 ? 29 : i)).map((f) => {
+    const g = new Uint8Array(W * H).fill(30);
+    for (let y = 0; y < 30; y++) for (let x = 0; x < 40; x++) g[y * W + x] = f[y * W + x];
+    return g;
+  });
+  assert.deepEqual(analyse(frames, 30, opts).stutters, [{ t: 1, kind: "repeat" }]);
+});
+
+test("a title sliding over a flat background is not a stutter", () => {
+  const frames = Array.from({ length: 90 }, (_, i) => {
+    const f = new Uint8Array(W * H).fill(20);
+    const left = Math.round(ease(Math.min(1, i / 40)) * 100);
+    for (let y = 40; y < 52; y++) f.fill(230, y * W + left, y * W + left + 50);
+    return f;
+  });
+  const r = analyse(frames, 30, opts);
+  assert.deepEqual([r.stutters, r.cadence], [[], []]);
+});
+
 test("a smooth fade has no jumps, pops or freezes", () => {
   const r = analyse(fade(90), 30, opts);
   assert.deepEqual([r.jumps, r.pops, r.frozen], [[], [], []]);
