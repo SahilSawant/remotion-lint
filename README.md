@@ -82,9 +82,10 @@ counted as text. Clipping uses the font's em box and overlap uses roughly its ca
 descent, so tight leading down to about 0.7 is not an overlap. An all-caps line (or one set in capitals with
 `text-transform`) is tested for clipping by the middle 0.8 em where capitals sit, so a per-line mask down to
 `line-height: 0.8` is not a clip, and a tighter one that cuts into the letters is. Text with opacity under 0.5, hidden text, text fully
-outside its `clip-path` shape, and text under a layer nothing can show through are ignored. Only a plain, solid,
-fully opaque colour with no mask, filter, clip-path or blend mode counts as such a layer: a vignette, tint, scrim,
-gradient, image or video never hides the text under it by its CSS alone; the pixel checks below then decide
+outside its `clip-path` shape, and text under a layer nothing can show through are ignored. Only a fully opaque
+colour, or a gradient whose every stop is fully opaque and that fills the whole box, with no mask, filter, clip-path
+or blend mode counts as such a layer (the next screen of an app sliding over the last one): a vignette, tint, scrim,
+see-through gradient, image or video never hides the text under it by its CSS alone; the pixel checks below then decide
 whether any of its letters still reach the screen. Forbidden words are searched down to 5% opacity, so a faint
 watermark is still found. Clipping follows CSS: a box only clips what it contains, so an absolutely positioned child
 escapes an `overflow: hidden` parent that is not its containing block.
@@ -98,7 +99,9 @@ drifting shot) the problem is passing: it is printed as `moving, not counted`, l
 and does not fail the run. Text on its way out is also followed backward, to where it was before it left. The
 problem counts if the text comes to rest still showing it, or shows it for as long as it can be followed: a caption
 too small through a whole push-in, a title that drifts into the margin and stays there, a word still animating when
-its scene cuts away, a marquee always cut by its box. Text is followed by what it says (numbers aside, so a counter
+its scene cuts away, a marquee always cut by its box. Still text under a moving cover is followed the same way: a
+coin that flies across a timer for a few frames is `covered` only while it passes, so it is passing too, while an
+icon that drifts over the words and stays there counts. Text is followed by what it says (numbers aside, so a counter
 counting up while it slides in is still the same text) and its font size, so the verdict is the same whichever
 seconds you check. Text whose words change, like a typewriter, is judged frame by frame as if it stood still.
 
@@ -110,6 +113,15 @@ reported. A fourth screenshot as authored must match the first; if anything move
 GIF, media still loading), the frame gets a warning and these pixel checks are skipped for it. `low-contrast` and
 `covered` follow moving text like every other check, so a fade-in passes once it is readable. `minContrast: 0`
 switches `low-contrast` off.
+
+**Motion blur.** `<CameraMotionBlur>` draws the scene once per sample, each copy faint, and they add up to one blurred
+picture. remotion-lint measures the middle sample, counts each piece of text once, and judges its pixels against the
+whole blurred picture. A fainter copy of the same words at the same size (a `<Trail>`, a ghost) is never an overlap.
+`<HtmlInCanvasMotionBlur>` is not handled yet.
+
+**Slow frames.** A frame that takes longer than 15 seconds prints a "still checking" line on stderr every 15 seconds.
+`layout.frameBudget` (seconds, default 0 for no limit) stops the pixel checks on a frame once it runs out, with a
+warning saying how many text runs were checked.
 
 **Not covered:** text drawn on a `<canvas>` or baked into a video or image is not read. Text from `::before` and
 `::after` is read from its CSS `content` for `too-small` and `forbidden-word` only. SVG `<text>` is checked for size,
@@ -179,7 +191,7 @@ cut-down ffmpeg that Remotion ships for rendering cannot output raw frames, so i
 | Attribute | Effect |
 | --- | --- |
 | `data-lint="embedded"` | another app's UI shown inside your video (a phone, a screen recording). Its text is only checked for clipping and forbidden words, because it is supposed to look like the real thing |
-| `data-lint-layer="<n>"` | stacked shots during a transition. Text in a layer is skipped where a higher layer with a solid, fully opaque background covers it |
+| `data-lint-layer="<n>"` | stacked shots during a transition. Text in a layer is skipped where a higher layer with a fully opaque colour or gradient covers it |
 | `data-lint-ignore="<kind> <kind>"` | switches those checks off for the element and everything inside it; `"all"` switches all of them off. For `overlap`, marking either element of the pair is enough |
 | `data-lint="screen"` / `"ref"` | the pair `diff` compares |
 
@@ -196,7 +208,7 @@ export default {
   entryPoint: "src/index.ts",
   webpackOverride: (c) => enableTailwind(c), // the same override as in remotion.config.ts
   props: { title: "Launch" }, // merged over the composition's default props; --props on the command line wins
-  layout: { minFontPx: 28, safeArea: "5%", overlap: 0.15, forbidden: ["\\blorem\\b", "TODO"], minContrast: 3 },
+  layout: { minFontPx: 28, safeArea: "5%", overlap: 0.15, forbidden: ["\\blorem\\b", "TODO"], minContrast: 3, frameBudget: 0 },
   diff: { threshold: 0.12, maxMismatchPct: 1, maxBandPct: 2 },
   motion: { cuts: [11.5, 20.4], allow: [[30, 31.5]], frozenSeconds: 2, failOnFrozen: false },
   browserChannel: "", // "chrome" to use your installed Chrome
