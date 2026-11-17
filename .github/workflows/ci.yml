@@ -32,7 +32,7 @@ jobs:
           cache: npm
       - run: npm ci
       - if: matrix.remotion != ''
-        run: npm install --no-save remotion@${{ matrix.remotion }} @remotion/bundler@${{ matrix.remotion }} @remotion/transitions@${{ matrix.remotion }} react@${{ matrix.react }} react-dom@${{ matrix.react }}
+        run: npm install --no-save remotion@${{ matrix.remotion }} @remotion/bundler@${{ matrix.remotion }} @remotion/transitions@${{ matrix.remotion }} @remotion/motion-blur@${{ matrix.remotion }} react@${{ matrix.react }} react-dom@${{ matrix.react }}
       - run: npx playwright install --with-deps chromium
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: npm test
@@ -56,7 +56,7 @@ jobs:
           cd "$app"
           npm init -y >/dev/null
           v=$(node -p "require('$GITHUB_WORKSPACE/package.json').devDependencies.remotion")
-          npm install "$tgz" remotion@$v @remotion/bundler@$v @remotion/transitions@$v react@19.1.0 react-dom@19.1.0
+          npm install "$tgz" remotion@$v @remotion/bundler@$v @remotion/transitions@$v @remotion/motion-blur@$v react@19.1.0 react-dom@19.1.0
           node node_modules/playwright/cli.js install --with-deps chromium
           npx remotion-lint --version
           set +e
