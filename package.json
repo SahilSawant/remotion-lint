@@ -1,6 +1,6 @@
 {
   "name": "remotion-lint",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A linter for Remotion videos: opens the real bundle in a browser, checks every frame you ask for, and fails CI on clipped, tiny, overlapping, low-contrast or covered text, banned words, drift from a reference screen, and stutters or glitches in the rendered file.",
   "license": "MIT",
   "author": "Sahil Sawant (https://github.com/SahilSawant)",
