@@ -114,13 +114,26 @@ export const measure = ({ minFontPx, safeX, safeY, W, H, overlap, forbidden }: R
     const transparent = (c: string) => !c || c === "transparent" || rgba(c)?.[3] === 0;
     const paints = (cs: CSSStyleDeclaration) => !transparent(cs.backgroundColor) || cs.backgroundImage !== "none";
     /**
-     * Paints a solid, fully opaque colour that nothing can show through: normal blending, and no mask, filter or
-     * clip-path on it or any ancestor. Anything less (a tint, gradient, vignette, masked scrim, image or video) does not hide text.
+     * A background gradient that paints every pixel of the box with no see-through stop: each colour fully opaque and
+     * read as rgb (a colour space this does not read counts as see-through), sized to the whole box, not clipped to text.
+     */
+    const solidGradient = (cs: CSSStyleDeclaration) => {
+      const img = cs.backgroundImage;
+      if (!/^(repeating-)?(linear|radial|conic)-gradient\(/.test(img) || /url\(|lab\(|lch\(|color\(|color-mix\(/.test(img)) return false;
+      const stops = img.match(/rgba?\([^)]*\)/g) ?? [];
+      if (!stops.length || stops.some((c) => rgba(c)?.[3] !== 1)) return false;
+      if (!cs.backgroundSize.split(",").every((s) => /^(auto|auto auto|cover|100% 100%)$/.test(s.trim()))) return false;
+      return !/text/.test(cs.backgroundClip);
+    };
+    /**
+     * Paints a fully opaque colour or gradient that nothing can show through: normal blending, and no mask, filter or
+     * clip-path on it or any ancestor. Anything less (a tint, vignette, masked scrim, image or video) does not hide text.
      */
     const opaque = (el: Element) => {
       const cs = getComputedStyle(el);
-      if (rgba(cs.backgroundColor)?.[3] !== 1 || cs.mixBlendMode !== "normal") return false;
+      if ((rgba(cs.backgroundColor)?.[3] !== 1 && !solidGradient(cs)) || cs.mixBlendMode !== "normal") return false;
       for (let e: Element | null = el; e && e !== document.documentElement; e = e.parentElement) {
+        if (samples.has(e)) continue;
         const c = getComputedStyle(e);
         if ((c.maskImage && c.maskImage !== "none") || c.filter !== "none" || c.clipPath !== "none" || c.mixBlendMode !== "normal") return false;
       }
@@ -135,7 +148,47 @@ export const measure = ({ minFontPx, safeX, safeY, W, H, overlap, forbidden }: R
     };
     const short = (s: string) => (s.length > 60 ? s.slice(0, 57) + "..." : s);
     const norm = (s: string) => s.replace(/\s+/g, " ").trim();
-    const skip = (el: Element) => !!el.closest("script, style, noscript, [data-lint-mark]");
+    const skip = (el: Element) => !!el.closest("script, style, noscript, [data-lint-mark], [data-lint-ghost]");
+
+    /**
+     * `<CameraMotionBlur>` draws the scene once per sample, in sibling layers that each add 1/n of it
+     * (`mix-blend-mode: plus-lighter`, `filter: opacity(1/n)`). A viewer sees one blurred picture, so only the middle
+     * sample is measured and the others become ghosts that nothing else looks at. Each run's copies in the ghosts get its
+     * run number too (see the return value), so the pixel checks hide and paint every copy together.
+     */
+    const ghosts: Array<[ghost: Element, sample: Element]> = [];
+    /** The measured samples. Their blend and 1/n opacity add up across the samples, so they do not make a solid box see-through. */
+    const samples = new Set<Element>();
+    const blurParents = new Set([...document.querySelectorAll('[style*="plus-lighter"]')].map((e) => e.parentElement));
+    for (const parent of blurParents) {
+      const kids = parent ? [...parent.children] : [];
+      const n = kids.length;
+      const share = (e: Element) => {
+        const cs = getComputedStyle(e);
+        const m = /^opacity\(([\d.]+)\)$/.exec(cs.filter);
+        return cs.mixBlendMode === "plus-lighter" && !!m && Math.abs(parseFloat(m[1]) - 1 / n) < 0.005;
+      };
+      if (n < 2 || !kids.every(share)) continue;
+      const middle = kids[Math.floor(n / 2)];
+      samples.add(middle);
+      for (const k of kids) {
+        if (k === middle) continue;
+        k.setAttribute("data-lint-ghost", "");
+        ghosts.push([k, middle]);
+      }
+    }
+    /** The elements in the ghost samples that stand where `el` stands in its own sample. */
+    const copiesOf = (el: Element): Element[] => {
+      const out: Element[] = [];
+      for (const [ghost, sample] of ghosts) {
+        if (!sample.contains(el)) continue;
+        const path: number[] = [];
+        for (let e = el; e !== sample && e.parentElement; e = e.parentElement) path.unshift([...e.parentElement.children].indexOf(e));
+        const twin = path.reduce<Element | undefined>((e, i) => e?.children[i], ghost);
+        if (twin && twin.tagName === el.tagName) out.push(twin);
+      }
+      return out;
+    };
 
     const opacityOf = (el: Element | null) => {
       let a = 1;
@@ -272,7 +325,7 @@ export const measure = ({ minFontPx, safeX, safeY, W, H, overlap, forbidden }: R
       return { vis, cut };
     };
 
-    const layers = [...document.querySelectorAll<HTMLElement>("[data-lint-layer]")].map((e) => ({
+    const layers = [...document.querySelectorAll<HTMLElement>("[data-lint-layer]")].filter((e) => !skip(e)).map((e) => ({
       z: Number(e.dataset.lintLayer), o: opacityOf(e), el: e,
     }));
     const covered = (el: Element, r: R) => {
@@ -284,11 +337,12 @@ export const measure = ({ minFontPx, safeX, safeY, W, H, overlap, forbidden }: R
     const frame: R = { left: 0, top: 0, right: W, bottom: H };
     /**
      * True when an unrelated element painted on top of `el` hides all of `r` (the next scene of a transition, a full-frame
-     * card). Only a plain solid colour counts (see `opaque`); images and video never do, since they may be transparent.
+     * card). Only a fully opaque colour or gradient counts (see `opaque`); images and video never do, since they may be transparent.
      */
     const overlaid = (el: Element, r: R) => {
       const stack = document.elementsFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2);
       for (const top of stack) {
+        if (skip(top)) continue;
         if (top === el || el.contains(top) || top.contains(el)) return false;
         if (opacityOf(top) > 0.98 && opaque(top) && inside(top, r)) return true;
       }
@@ -351,7 +405,7 @@ export const measure = ({ minFontPx, safeX, safeY, W, H, overlap, forbidden }: R
       }
 
       for (const c of document.querySelectorAll("div, span, button")) {
-        if (c.contains(t.el) || t.el.contains(c) || c.closest('[data-lint="embedded"]')) continue;
+        if (c.contains(t.el) || t.el.contains(c) || skip(c) || c.closest('[data-lint="embedded"]')) continue;
         const ccs = getComputedStyle(c);
         if (transparent(ccs.backgroundColor) || ccs.mixBlendMode !== "normal" || (rgba(ccs.backgroundColor)?.[3] ?? 1) < 0.9 || opacityOf(c) < 0.5) continue;
         const cr = c.getBoundingClientRect();
@@ -384,6 +438,8 @@ export const measure = ({ minFontPx, safeX, safeY, W, H, overlap, forbidden }: R
         const a = film[i], b = film[j];
         if ((a.el.contains(b.el) && inFlow(a.el, b.el)) || (b.el.contains(a.el) && inFlow(b.el, a.el))) continue;
         if (a.own === b.own && near(a.full, b.full, Math.max(a.px, b.px))) continue;
+        // A fainter copy of the same words at the same size is an echo (a <Trail>, a ghost), not two things colliding.
+        if (a.own === b.own && a.px === b.px && Math.min(a.opacity, b.opacity) < 0.95) continue;
         const hit = a.caps.some((la) => b.caps.some((lb) => area(intersect(la, lb)) > overlap * Math.min(area(la), area(lb))));
         if (hit) add("overlap", [a.el, b.el], [a.key, b.key], `${short(a.text)} <> ${short(b.text)}`, union([a.vis, b.vis]));
       }
@@ -494,7 +550,7 @@ export const measure = ({ minFontPx, safeX, safeY, W, H, overlap, forbidden }: R
     // A <video> element, or an <OffthreadVideo> frame served blank (1x1) because it could not be extracted (see video.ts).
     // Newer Remotion loads the frame through a blob: URL, so the blank frame is known by its size, not its address.
     const blankVideo = (e: Element) => e.tagName === "VIDEO" || ((e as HTMLImageElement).complete && (e as HTMLImageElement).naturalWidth === 1 && (e as HTMLImageElement).naturalHeight === 1);
-    const videos = [...document.querySelectorAll("video, img")].filter(blankVideo).map((e) => e.getBoundingClientRect());
+    const videos = [...document.querySelectorAll("video, img")].filter((e) => !skip(e) && blankVideo(e)).map((e) => e.getBoundingClientRect());
     const isClipText = (cs: CSSStyleDeclaration) => cs.backgroundClip === "text" || (cs as unknown as { webkitBackgroundClip: string }).webkitBackgroundClip === "text";
     const paintless = (el: Element) => {
       const cs = getComputedStyle(el);
@@ -508,13 +564,14 @@ export const measure = ({ minFontPx, safeX, safeY, W, H, overlap, forbidden }: R
       texts: runs.length,
       issues,
       runs: runs.map((t, i) => ({
-        key: t.key, full: toBox(t.full), visible: toBox(t.vis), opacity: t.opacity, clip: t.clip, index: (t.el.setAttribute("data-lint-run", String(i)), i), text: short(t.text), px: t.px,
+        key: t.key, full: toBox(t.full), visible: toBox(t.vis), opacity: t.opacity, clip: t.clip, index: ([t.el, ...copiesOf(t.el)].forEach((e) => e.setAttribute("data-lint-run", String(i))), i), text: short(t.text), px: t.px,
         lines: t.lines.map(toBox), occluders: t.svg ? [] : occludersOf(t).map(toBox), overVideo: videos.some((v) => area(intersect(v, t.vis)) >= 1),
         embedded: t.embedded, paintless: !t.svg && paintless(t.el), ignore: PIXEL_KINDS.filter((k) => ignored(t.el, k)),
       })),
     };
   } finally {
     probe.remove();
+    document.querySelectorAll("[data-lint-ghost]").forEach((e) => e.removeAttribute("data-lint-ghost"));
   }
 };
 
@@ -564,5 +621,15 @@ export function moved(keys: string[], now: TextRun[], other: TextRun[]): boolean
   return keys.some((k) => {
     const p = now.find((r) => r.key === k), q = other.find((r) => r.key === k);
     return !!p && !!q && (!sameBox(p.full, q.full) || !sameBox(p.visible, q.visible) || Math.abs(p.opacity - q.opacity) > 0.01 || p.clip !== q.clip);
+  });
+}
+
+/** Whether what sits on top of any run in `keys` (its occluders) is in a different place or shape in `other`: a coin flying over a still timer. */
+export function coverMoved(keys: string[], now: TextRun[], other: TextRun[]): boolean {
+  return keys.some((k) => {
+    const p = now.find((r) => r.key === k), q = other.find((r) => r.key === k);
+    if (!p || !q) return false;
+    const unmatched = (a: Box[], b: Box[]) => a.some((o) => !b.some((x) => sameBox(o, x)));
+    return unmatched(p.occluders, q.occluders) || unmatched(q.occluders, p.occluders);
   });
 }

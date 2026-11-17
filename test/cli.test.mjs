@@ -91,15 +91,41 @@ test("where a guess would pass a real problem, the problem is reported", () => {
   assert.equal(code, 1);
 });
 
-test("pixels decide what is seen: outlines, gradients, emoji and SVG pass; grey on grey, busy pictures, covering icons and ::before text fail; masked, transparent and image-covered text is skipped", () => {
-  const expected = ["clean", "low-contrast", "clean", "clean", "clean", "clean", "too-small", "covered", "clean", "moving:low-contrast", "low-contrast", "clean", "clean", "too-small", "clean", "clean"];
+test("pixels decide what is seen: outlines, gradients, emoji and SVG pass; grey on grey, busy pictures, covering icons and ::before text fail; masked, transparent and image-covered text is skipped; a coin flying past passes, an icon that stays does not", () => {
+  const expected = ["clean", "low-contrast", "clean", "clean", "clean", "clean", "too-small", "covered", "clean", "moving:low-contrast", "low-contrast", "clean", "clean", "too-small", "clean", "clean", "moving:covered", "covered"];
   const secs = expected.map((_, i) => String(i + (i === 9 ? 0.2 : 0.5)));
   const { code, report } = run("layout", "Pixels", ...secs);
   expectFrames(report, expected);
   const seen = report.frames.map((f) => f.texts);
-  for (const i of [0, 1, 2, 3, 4, 6, 7, 9, 10, 11, 12, 14]) assert.equal(seen[i], 1, `second ${secs[i]}: the text is on screen, so it must be counted`);
+  for (const i of [0, 1, 2, 3, 4, 6, 7, 9, 10, 11, 12, 14, 16, 17]) assert.equal(seen[i], 1, `second ${secs[i]}: the text is on screen, so it must be counted`);
   for (const i of [5, 8, 15]) assert.equal(seen[i], 0, `second ${secs[i]}: no one can see this text`);
   assert.equal(code, 1);
+});
+
+test("motion blur and trails are judged as the one picture a viewer sees, not once per copy", () => {
+  const secs = ["0.5", "1.5", "2.5", "3.5", "4.5", "5.5", "6.333"];
+  const started = Date.now();
+  const { code, report } = run("layout", "Blurred", ...secs);
+  // The last label is cut only on its way under a solid screen: inside the blur that screen still hides it.
+  expectFrames(report, ["clean", "clipped", "low-contrast", "clean", "clean", "clean", "moving:clipped"]);
+  assert.deepEqual(report.frames.slice(0, 6).map((f) => f.moving.length), [0, 0, 0, 0, 0, 0], "nothing is excused as moving either");
+  // A strong trail's nearest echo (opacity 0.6) is readable text of its own, so it counts; it is not an overlap.
+  assert.deepEqual(report.frames.map((f) => f.texts), [1, 1, 1, 12, 1, 2, 1], "each label counts once, however many samples draw it");
+  assert.deepEqual(report.warnings, []);
+  // Measured per copy, the twelve labels under sixteen samples took minutes; together they take seconds.
+  assert.ok(Date.now() - started < 120_000, `took ${Math.round((Date.now() - started) / 1000)}s`);
+  assert.equal(code, 1);
+});
+
+test("a frame that runs out of its frameBudget stops the pixel checks with a warning instead of running on", () => {
+  const dir = tmp("remotion-lint-config-");
+  const config = path.join(dir, "c.json");
+  fs.writeFileSync(config, JSON.stringify({ entryPoint: path.join(example, "src", "index.ts"), layout: { frameBudget: 0.001 } }));
+  const out = tmp("remotion-lint-");
+  const r = raw("layout", "Blurred", "3.5", "--config", config, "--out", out, "--json");
+  const report = JSON.parse(r.stdout);
+  assert.equal(report.frames[0].texts, 12);
+  assert.match(report.warnings[0]?.message ?? "", /stopped at the 0\.001s frameBudget: contrast and covering were checked for \d+ of 12 text runs/);
 });
 
 test("<OffthreadVideo> shows its real frames, so text over footage is judged by what is behind it at that moment", () => {
@@ -132,9 +158,10 @@ test("Remotion's fade and wipe transitions are motion, and each scene alone is c
   assert.equal(code, 0);
 });
 
-test("vignettes, tints, scrims, click-through layers, faint watermarks and slow push-ins hide nothing", () => {
-  const expected = ["too-small", "too-small", "too-small", "too-small", "forbidden-word", "clean", "too-small"];
-  const { code, report } = run("layout", "Overlays", ...expected.map((_, i) => String(i + 0.5)));
+test("vignettes, tints, scrims, click-through layers, faint watermarks and slow push-ins hide nothing; a solid colour or a fully opaque gradient over the whole text does", () => {
+  const expected = ["too-small", "too-small", "too-small", "too-small", "forbidden-word", "clean", "too-small", "clean", "too-small", "too-small", "moving:clipped"];
+  // The last label is cut only on its way under a gradient screen (an app's next screen sliding in), which hides it.
+  const { code, report } = run("layout", "Overlays", ...expected.map((_, i) => String(i + (i === 10 ? 0.333 : 0.5))));
   expectFrames(report, expected);
   assert.equal(code, 1);
 });

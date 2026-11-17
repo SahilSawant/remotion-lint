@@ -2,6 +2,7 @@ import React from "react";
 import { TransitionSeries, linearTiming } from "@remotion/transitions";
 import { fade } from "@remotion/transitions/fade";
 import { wipe } from "@remotion/transitions/wipe";
+import { CameraMotionBlur, Trail } from "@remotion/motion-blur";
 import { AbsoluteFill, Composition, Img, interpolate, OffthreadVideo, Sequence, spring, staticFile, useCurrentFrame, useVideoConfig } from "remotion";
 
 const font: React.CSSProperties = { fontFamily: "Helvetica, Arial, sans-serif", fontSize: 48, color: "#111" };
@@ -210,6 +211,22 @@ const PushIn: React.FC = () => (
   </AbsoluteFill>
 );
 
+const bigWhite: React.CSSProperties = { ...font, fontSize: 64, color: "#fff", whiteSpace: "nowrap" };
+
+/** A label slides out of its box and stops there, cut, as an opaque screen slides over and hides it (an iOS push). */
+const PushedOut: React.FC<{ cover?: string }> = ({ cover = "#2a2a6a" }) => {
+  const f = useCurrentFrame();
+  const k = interpolate(f, [4, 16], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  return (
+    <>
+      <div style={{ ...at(200, 400), width: 700, height: 80, overflow: "hidden" }}>
+        <div style={{ ...bigWhite, transform: `translateX(${-200 * k}px)` }}>Pushed out of view</div>
+      </div>
+      <div style={{ ...at(150, 350), width: 900, height: 200, background: cover, transform: `translateX(${1000 * (1 - k)}px)` }} />
+    </>
+  );
+};
+
 /** Finishing layers and camera moves that must not hide a problem underneath. Each second must report its kind. */
 export const OVERLAYS: Array<[number, string, React.ReactNode]> = [
   [0, "too-small", <>{caption}<AbsoluteFill style={{ background: "radial-gradient(circle, transparent 60%, rgba(0,0,0,.5))" }} /></>],
@@ -224,6 +241,10 @@ export const OVERLAYS: Array<[number, string, React.ReactNode]> = [
   [4, "forbidden-word", <div style={{ ...font, ...at(200, 300), fontSize: 120, fontWeight: 900, opacity: 0.4 }}>NIGHTJAR DRAFT</div>],
   [5, "clean", <>{caption}<AbsoluteFill style={{ background: "#fff" }} /></>],
   [6, "too-small", <PushIn />],
+  [7, "clean", <>{caption}<AbsoluteFill style={{ background: "radial-gradient(circle at 50% 40%, #1d1740, #18132f 65%)" }} /></>],
+  [8, "too-small", <>{caption}<AbsoluteFill style={{ background: "linear-gradient(#1d1740, #18132f) 0 0 / 200px 200px no-repeat" }} /></>],
+  [9, "too-small", <>{caption}<AbsoluteFill style={{ background: "linear-gradient(#fff 40%, transparent 40%)" }} /></>],
+  [10, "moving:clipped", <AbsoluteFill style={{ background: "#111" }}><PushedOut cover="radial-gradient(circle at 50% 40%, #1d1740, #18132f 65%)" /></AbsoluteFill>],
 ];
 
 const Push: React.FC = () => (
@@ -471,7 +492,6 @@ const svgUri = (body: string) => `data:image/svg+xml,${encodeURIComponent(`<svg 
 const solidImage = svgUri('<rect width="100" height="100" fill="#3a6"/>');
 const clearImage = svgUri("");
 const stripes = "repeating-linear-gradient(90deg, #fff 0 40px, #000 40px 80px)";
-const bigWhite: React.CSSProperties = { ...font, fontSize: 64, color: "#fff", whiteSpace: "nowrap" };
 
 const FadeOnGrey: React.FC = () => {
   const f = useCurrentFrame();
@@ -480,6 +500,13 @@ const FadeOnGrey: React.FC = () => {
       <div style={{ ...bigWhite, ...at(200, 400), opacity: interpolate(f, [0, 20], [0.5, 1], { extrapolateRight: "clamp" }) }}>Fading in on grey</div>
     </AbsoluteFill>
   );
+};
+
+/** Still words that a coin flies across in a few frames, or that an icon drifts over for the whole scene. */
+const CoinPass: React.FC<{ drift?: boolean }> = ({ drift }) => {
+  const f = useCurrentFrame();
+  const x = drift ? 420 + f : interpolate(f, [0, 29], [-400, 1400]);
+  return <><div style={{ ...font, ...at(200, 400) }}>{drift ? "An icon drifts onto these words" : "A coin flies over these words"}</div><img src={solidImage} style={{ ...at(x, 395), width: 70, height: 70 }} /></>;
 };
 
 /** What only the pixels can tell: is the text there to see, and does it stand out. Each second must report exactly its kind. */
@@ -513,6 +540,8 @@ export const PIXELS: Array<[number, string, React.ReactNode]> = [
   [13, "too-small", <><style>{".sale::before { content: 'SALE'; font: 14px Helvetica, Arial, sans-serif; color: #111; }"}</style><div className="sale" style={at(200, 400)} /></>],
   [14, "clean", <div style={{ ...bigWhite, ...at(200, 400), textShadow: "0 0 2px #000, 0 2px 8px rgba(0,0,0,0.9)" }}>Shadowed caption on white</div>],
   [15, "clean", <div style={{ ...font, ...at(200, 500), fontSize: 14, color: "transparent" }}>Transparent fine print</div>],
+  [16, "moving:covered", <CoinPass />],
+  [17, "covered", <CoinPass drift />],
 ];
 
 /**
@@ -542,6 +571,40 @@ const Crash: React.FC = () => {
   throw new Error("this composition always fails");
 };
 
+/** Text that slides right at `speed` px a frame, so motion blur and trails draw it in more than one place. */
+const Slide: React.FC<{ speed?: number; children: React.ReactNode }> = ({ speed = 6, children }) => {
+  const f = useCurrentFrame();
+  return <AbsoluteFill style={{ transform: `translateX(${f * speed}px)` }}>{children}</AbsoluteFill>;
+};
+const blur = (node: React.ReactNode) => <CameraMotionBlur samples={16} shutterAngle={180}>{node}</CameraMotionBlur>;
+const LABELS = ["Play", "Shop", "Ranks", "Store", "Me", "Daily", "Wheel", "Gifts", "Coins", "Boost", "Skins", "Help"];
+
+export const BLURRED: Array<[number, string, React.ReactNode]> = [
+  [0, "clean", <AbsoluteFill style={{ background: "#111" }}>{blur(<Slide><div style={{ ...bigWhite, ...at(200, 400) }}>Run over, paid out</div></Slide>)}</AbsoluteFill>],
+  [1, "clipped", (
+    <AbsoluteFill style={{ background: "#111" }}>
+      {blur(<Slide speed={2}><div style={{ ...at(200, 400), width: 300, height: 90, overflow: "hidden" }}><div style={bigWhite}>Cut off by its box</div></div></Slide>)}
+    </AbsoluteFill>
+  )],
+  [2, "low-contrast", <AbsoluteFill style={{ background: "#777" }}>{blur(<Slide speed={2}><div style={{ ...bigWhite, ...at(200, 400), color: "#888" }}>Grey on grey, blurred</div></Slide>)}</AbsoluteFill>],
+  [3, "clean", (
+    <AbsoluteFill style={{ background: "#111" }}>
+      {blur(
+        <Slide speed={3}>
+          {LABELS.map((l, i) => (
+            <div key={l} style={{ ...at(160 + (i % 4) * 400, 240 + Math.floor(i / 4) * 220), width: 220, height: 90, background: "#2a2a6a", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <span style={{ ...bigWhite, fontSize: 40 }}>{l}</span>
+            </div>
+          ))}
+        </Slide>,
+      )}
+    </AbsoluteFill>
+  )],
+  [4, "clean", <AbsoluteFill style={{ background: "#111" }}><Trail layers={4} lagInFrames={2} trailOpacity={0.4}><Slide><div style={{ ...bigWhite, ...at(200, 400) }}>A faint trail</div></Slide></Trail></AbsoluteFill>],
+  [5, "clean", <AbsoluteFill style={{ background: "#111" }}><Trail layers={4} lagInFrames={2} trailOpacity={0.8}><Slide><div style={{ ...bigWhite, ...at(200, 400) }}>A strong trail</div></Slide></Trail></AbsoluteFill>],
+  [6, "moving:clipped", <AbsoluteFill style={{ background: "#111" }}>{blur(<PushedOut />)}</AbsoluteFill>],
+];
+
 export const Root: React.FC = () => (
   <>
     <Composition id="Planted" component={Planted} durationInFrames={PLANTED.length * 30} fps={30} width={1920} height={1080} />
@@ -564,6 +627,7 @@ export const Root: React.FC = () => (
     <Composition id="Overlays" component={() => <Strip items={OVERLAYS} />} durationInFrames={OVERLAYS.length * 30} fps={30} width={1920} height={1080} />
     <Composition id="Cautious" component={() => <Strip items={CAUTIOUS} />} durationInFrames={CAUTIOUS.length * 30} fps={30} width={1920} height={1080} />
     <Composition id="Pixels" component={() => <Strip items={PIXELS} />} durationInFrames={PIXELS.length * 30} fps={30} width={1920} height={1080} />
+    <Composition id="Blurred" component={() => <Strip items={BLURRED} />} durationInFrames={BLURRED.length * 30} fps={30} width={1920} height={1080} />
     <Composition id="VideoFlash" component={() => <OverVideo src="flash.mp4" />} durationInFrames={90} fps={30} width={1920} height={1080} />
     <Composition id="VideoAlpha" component={() => <OverVideo src="alpha.webm" transparent color="#111" />} durationInFrames={30} fps={30} width={1920} height={1080} />
     <Composition id="VideoHdr" component={() => <OverVideo src="hdr.mp4" />} durationInFrames={30} fps={30} width={1920} height={1080} />

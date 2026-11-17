@@ -53,6 +53,7 @@
   },
   "devDependencies": {
     "@remotion/bundler": "4.0.529",
+    "@remotion/motion-blur": "4.0.529",
     "@remotion/transitions": "^4.0.529",
     "@types/node": "^22.10.0",
     "@types/pngjs": "^6.0.5",

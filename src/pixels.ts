@@ -9,6 +9,10 @@ export interface PixelResult {
   invisible: string[];
   /** The frame changed between screenshots (a CSS animation, a GIF, media still loading), so nothing was judged. */
   unstable: boolean;
+  /** The frame's time budget ran out: `checked` of `total` runs were judged. */
+  timedOut: boolean;
+  checked: number;
+  total: number;
 }
 
 type Mode = "hide" | "magenta" | null;
@@ -65,9 +69,10 @@ const ratio = (a: number, b: number) => (Math.max(a, b) + 0.05) / (Math.min(a, b
  *   outside it (an outline or shadow counts, since it is there in the authored shot). Fails when a quarter or more of
  *   the edges stay under `minContrast`.
  */
-export async function checkPixels(page: Page, m: FrameMeasure, minContrast: number, W: number, H: number): Promise<PixelResult> {
-  const result: PixelResult = { issues: [], invisible: [], unstable: false };
+export async function checkPixels(page: Page, m: FrameMeasure, minContrast: number, W: number, H: number, deadline = Infinity): Promise<PixelResult> {
+  const result: PixelResult = { issues: [], invisible: [], unstable: false, timedOut: false, checked: 0, total: 0 };
   const runs = m.runs.filter((r) => r.lines.length && !r.overVideo);
+  result.total = runs.length;
   if (!runs.length) return result;
   const pad = Math.ceil(Math.max(...runs.map((r) => reach(r.px)))) + 1;
   const all = runs.flatMap((r) => r.lines);
@@ -138,6 +143,11 @@ export async function checkPixels(page: Page, m: FrameMeasure, minContrast: numb
     };
     try {
       for (const run of runs) {
+        if (Date.now() > deadline) {
+          result.timedOut = true;
+          break;
+        }
+        result.checked++;
         const ink = 0.3 * run.opacity;
         const lines = run.lines.map(local).filter((r) => r.r > r.l && r.b > r.t);
         const alpha = m.runs.some((o) => o !== run && touches(run, o)) ? coverage(await shot("hide", run.index), await shot("magenta", run.index)) : shared;

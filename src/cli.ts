@@ -129,7 +129,7 @@ async function frames(command: string, id: string, rest: string[], every: string
   process.once("SIGINT", onSignal);
   process.once("SIGTERM", onSignal);
   try {
-    const [{ openComposition }, { lintFrame, screenshotWithMarks, moved }, { diffFrame }, { checkPixels, applyPixels }] = await Promise.all([import("./page.js"), import("./layout.js"), import("./diff.js"), import("./pixels.js")]);
+    const [{ openComposition }, { lintFrame, screenshotWithMarks, moved, coverMoved }, { diffFrame }, { checkPixels, applyPixels }] = await Promise.all([import("./page.js"), import("./layout.js"), import("./diff.js"), import("./pixels.js")]);
     const comp = await openComposition({
       entryPoint: path.resolve(root, config.entryPoint), id, channel: config.browserChannel, props: config.props, webpackOverride: config.webpackOverride,
       onCleanup: (c) => (cleanup = c),
@@ -168,6 +168,7 @@ async function frames(command: string, id: string, rest: string[], every: string
       const dom = new Map<number, FrameMeasure>();
       const full = new Map<number, FrameMeasure>();
       const unstable = new Set<number>();
+      const timedOut = new Map<number, string>();
       /** What the DOM says about frame `g`: positions, sizes and clipping. Cheap, so motion is judged with it. */
       const domAt = async (g: number) => {
         if (!dom.has(g)) {
@@ -183,8 +184,10 @@ async function frames(command: string, id: string, rest: string[], every: string
           // Measured again now, so the run numbers the screenshots single out belong to the elements on screen.
           const m = await lintFrame(comp.page, rules, comp.width, comp.height);
           dom.set(g, m);
-          const p = await checkPixels(comp.page, m, rules.minContrast, comp.width, comp.height);
+          const budget = config.layout.frameBudget;
+          const p = await checkPixels(comp.page, m, rules.minContrast, comp.width, comp.height, budget ? Date.now() + budget * 1000 : Infinity);
           if (p.unstable) unstable.add(g);
+          if (p.timedOut) timedOut.set(g, `the pixel checks stopped at the ${budget}s frameBudget: contrast and covering were checked for ${p.checked} of ${p.total} text runs`);
           full.set(g, applyPixels(m, p));
         }
         return full.get(g)!;
@@ -192,12 +195,16 @@ async function frames(command: string, id: string, rest: string[], every: string
       const inRange = (g: number) => g >= 0 && g < comp.durationInFrames;
       const limit = Math.round(comp.fps);
       /**
-       * A problem on moving text is passing if that text is seen without it. Follow the text that moved frame by frame,
+       * A problem on moving text is passing if that text is seen without it. The same goes for still text under a moving
+       * cover (a coin flying over a timer). Follow the text that moved, or whose cover moved, frame by frame,
        * up to a second: as soon as it is on screen without the problem (a slide-in
        * that lands clear, a credit line fully in frame, a lower third settled into a drifting shot) the problem passes.
        * Looking back is only for text that leaves (an exit). It counts if the text comes to rest still showing it, or
        * shows it for as long as it can be followed (a caption too small through a whole push-in, a marquee always cut).
        */
+      /** The cause of `issue` is in motion between `a` and `b`: its text moves, or for a covered run, what covers it does. */
+      const stirs = (issue: Issue, keys: string[], a: FrameMeasure, b: FrameMeasure) =>
+        moved(keys, a.runs, b.runs) || (issue.kind === "covered" && coverMoved(keys, a.runs, b.runs));
       const settlesClear = async (issue: Issue, frame: number, movers: string[]) => {
         const at = PIXEL_KINDS.includes(issue.kind) ? measureAt : domAt;
         const follow = async (dir: number) => {
@@ -206,7 +213,7 @@ async function frames(command: string, id: string, rest: string[], every: string
             const m = await at(g);
             if (!movers.some((k) => m.runs.some((r) => r.key === k))) return "gone";
             if (!m.issues.some((i) => sameIssue(i, issue))) return "clear";
-            if (!moved(movers, prev.runs, m.runs)) return "stuck";
+            if (!stirs(issue, movers, prev, m)) return "stuck";
             prev = m;
           }
           return inRange(frame + dir * (limit + 1)) ? "stuck" : "gone";
@@ -227,51 +234,63 @@ async function frames(command: string, id: string, rest: string[], every: string
       let paired = 0;
       const out: Array<Record<string, unknown>> = [];
       for (const sec of secs) {
-        const frame = Math.round(sec * comp.fps);
-        if (command === "layout") {
-          const m = await measureAt(frame);
-          const keyed = m.issues.filter((i) => i.keys.length);
-          const neighbours: FrameMeasure[] = [];
-          if (keyed.length) for (const g of [frame - 1, frame + 1]) if (inRange(g)) neighbours.push(await domAt(g));
-          const moving: Issue[] = [];
-          for (const i of keyed) {
-            const movers = i.keys.filter((k) => neighbours.some((n) => moved([k], m.runs, n.runs)));
-            if (movers.length && (await settlesClear(i, frame, movers))) moving.push(i);
-          }
-          const issues: Issue[] = m.issues.filter((i) => !moving.includes(i));
-          failures += issues.length;
-          collect(sec);
-          if (unstable.has(frame)) {
-            const message = "the frame changed between screenshots (a CSS animation, a GIF or media still loading), so contrast and covering were not checked";
-            warnings.push({ sec, message });
-            log(`${sec}s  warning: ${message}`);
-          }
-          out.push({ sec, texts: m.texts, issues, moving });
-          if (issues.length) {
+        const started = Date.now();
+        // A frame can take minutes (thousands of text runs, a heavy 3D scene), so a slow one says it is still working.
+        const tick = setInterval(() => console.error(`${sec}s  still checking (${Math.round((Date.now() - started) / 1000)}s so far)`), 15_000);
+        try {
+          const frame = Math.round(sec * comp.fps);
+          if (command === "layout") {
+            const m = await measureAt(frame);
+            const keyed = m.issues.filter((i) => i.keys.length);
+            const neighbours: FrameMeasure[] = [];
+            if (keyed.length) for (const g of [frame - 1, frame + 1]) if (inRange(g)) neighbours.push(await domAt(g));
+            const moving: Issue[] = [];
+            for (const i of keyed) {
+              const movers = i.keys.filter((k) => neighbours.some((n) => stirs(i, [k], m, n)));
+              if (movers.length && (await settlesClear(i, frame, movers))) moving.push(i);
+            }
+            const issues: Issue[] = m.issues.filter((i) => !moving.includes(i));
+            failures += issues.length;
+            collect(sec);
+            if (unstable.has(frame)) {
+              const message = "the frame changed between screenshots (a CSS animation, a GIF or media still loading), so contrast and covering were not checked";
+              warnings.push({ sec, message });
+              log(`${sec}s  warning: ${message}`);
+            }
+            const late = timedOut.get(frame);
+            if (late) {
+              warnings.push({ sec, message: late });
+              log(`${sec}s  warning: ${late}`);
+            }
+            out.push({ sec, texts: m.texts, issues, moving });
+            if (issues.length) {
+              await go(frame);
+              await screenshotWithMarks(comp.page, issues, { x: rules.safeX, y: rules.safeY }, path.join(outDir, `${tag(sec)}.png`));
+            }
+            log(`${sec}s  ${m.texts} text runs  ${issues.length ? issues.map(describe).join(" | ") : "clean"}`);
+            for (const i of moving) log(`        moving, not counted: ${describe(i)}`);
+          } else {
             await go(frame);
-            await screenshotWithMarks(comp.page, issues, { x: rules.safeX, y: rules.safeY }, path.join(outDir, `${tag(sec)}.png`));
+            const d = await diffFrame(comp.page, config.diff.threshold);
+            collect(sec);
+            if ("skipped" in d) {
+              log(`${sec}s  nothing compared: ${d.skipped}`);
+              continue;
+            }
+            paired++;
+            const reasons = [];
+            if (d.sizeMismatch) reasons.push(`sizes differ: screen ${d.sizeMismatch.screen}, ref ${d.sizeMismatch.ref}`);
+            if (d.partial) reasons.push(d.partial);
+            if (d.mismatchPct > config.diff.maxMismatchPct) reasons.push(`over ${config.diff.maxMismatchPct}%`);
+            const band = d.hottestRows[0];
+            if (band && band[1] > config.diff.maxBandPct) reasons.push(`band ${band[0]}/12 differs by ${band[1]}%, over ${config.diff.maxBandPct}%`);
+            if (reasons.length) failures++;
+            fs.writeFileSync(path.join(outDir, `${tag(sec)}-diff.png`), d.sideBySide);
+            out.push({ sec, mismatchPct: d.mismatchPct, width: d.width, height: d.height, hottestRows: d.hottestRows, sizeMismatch: d.sizeMismatch, partial: d.partial, fail: reasons.length > 0 });
+            log(`${sec}s  mismatch ${d.mismatchPct}% of ${d.width}x${d.height}${reasons.length ? `  FAIL: ${reasons.join("; ")}` : ""}  worst rows: ${d.hottestRows.map(([r, p]) => `${r}/12 ${p}%`).join(", ")}`);
           }
-          log(`${sec}s  ${m.texts} text runs  ${issues.length ? issues.map(describe).join(" | ") : "clean"}`);
-          for (const i of moving) log(`        moving, not counted: ${describe(i)}`);
-        } else {
-          await go(frame);
-          const d = await diffFrame(comp.page, config.diff.threshold);
-          collect(sec);
-          if ("skipped" in d) {
-            log(`${sec}s  nothing compared: ${d.skipped}`);
-            continue;
-          }
-          paired++;
-          const reasons = [];
-          if (d.sizeMismatch) reasons.push(`sizes differ: screen ${d.sizeMismatch.screen}, ref ${d.sizeMismatch.ref}`);
-          if (d.partial) reasons.push(d.partial);
-          if (d.mismatchPct > config.diff.maxMismatchPct) reasons.push(`over ${config.diff.maxMismatchPct}%`);
-          const band = d.hottestRows[0];
-          if (band && band[1] > config.diff.maxBandPct) reasons.push(`band ${band[0]}/12 differs by ${band[1]}%, over ${config.diff.maxBandPct}%`);
-          if (reasons.length) failures++;
-          fs.writeFileSync(path.join(outDir, `${tag(sec)}-diff.png`), d.sideBySide);
-          out.push({ sec, mismatchPct: d.mismatchPct, width: d.width, height: d.height, hottestRows: d.hottestRows, sizeMismatch: d.sizeMismatch, partial: d.partial, fail: reasons.length > 0 });
-          log(`${sec}s  mismatch ${d.mismatchPct}% of ${d.width}x${d.height}${reasons.length ? `  FAIL: ${reasons.join("; ")}` : ""}  worst rows: ${d.hottestRows.map(([r, p]) => `${r}/12 ${p}%`).join(", ")}`);
+        } finally {
+          clearInterval(tick);
         }
       }
       if (command === "diff" && !paired) {
